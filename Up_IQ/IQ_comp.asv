@@ -1,0 +1,20 @@
+function [I_r, Q_r] = IQ_comp(data, X,Fq, pilot0, pilot1)
+
+%   비율계산
+com_p=(real(pilot1)-imag(pilot1))/2;
+com_C= asin((2 * real(pilot0) * imag(pilot0) ...
+        - (real(pilot0) * imag(pilot1) + real(pilot1) * imag(pilot0))) ...
+        / (real(pilot0) ^ 2 + imag(pilot0) ^ 2));
+
+%   진폭보상
+a_r=2/(2+com_p)*real(data);
+a_r=2/(2-com_p)*imag(data);
+
+%   위상보상
+m=1:X;
+for t=1:length(m)
+    S_IC(t) = cos(pi* com_C / 2) ...
+                + (tan((2*Fq*pi*t)/X + pi* com_C / 2) * sin(pi* com_C / 2));
+    S_QC(t) = cos(pi * comC / 2) ...
+                + (cot((2 * Fq * pi * t) / X - pi * comC / 2) * 
+end

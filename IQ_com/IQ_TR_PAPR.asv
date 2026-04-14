@@ -1,0 +1,166 @@
+function [PAPR, PAPR_imp] = IQ_TR_PAPR(iteration, factor);
+
+mode = 2;  % 1: 송신 original LO, 2: 송신 IQ imbalance 보상
+
+N0 = 64 - 4;    %   Subcarrier number
+Block=1;
+M=4;    %   Mapping method
+D=N0 *Block;   %   Data number
+X= 4;    %   Sampling 
+Fq=1;   %   Frenquency
+Fs = 4; % Sampling Frequency
+Fd = Fq;
+
+angle = 5; % deg 
+upsilon=0.5;   %   Amplitude
+C= angle * pi / 180;    %   Angle
+SNR=0:2:15;
+
+[b]=gen_mapping(M,D);
+sp= conj(vec2mat(b, N0)');
+
+for m = 1: Block
+    %   정보데이터
+    b_r=[1+1*i -1-1*i];
+    % pilot = [b_r, fliplr(-conj(b_r))];  % symmetric data-conjugate
+    %% adjacent data-conjugate
+    % for m = 1: 2 * length(b_r)
+    %     if mod(m, 2) == 1
+    %         pilot(m) = b_r(m);
+    %     else
+    %         pilot(m) = -conj(b_r(m - 1));
+    %     end
+    % end
+    pilot = vec2mat(conj([b_r; -conj(b_r)]'), 2 * length(b_r));
+
+    l = length(pilot);
+    
+    P_sp= conj(pilot)';
+    pilot_os = [P_sp(1: l / 2, :); zeros((Fs / Fd - 1) * l, size(P_sp, 2)); ...
+                P_sp(l / 2 + 1: l, :)];
+    pilot_ifft_out=ifft(pilot_os);
+    ps=vec2mat(pilot_ifft_out',1)';
+    I=real(ps);
+    Q=imag(ps);
+    [I_cos, Q_sin] = IQ_LO(X,Fq,C,upsilon);
+    conv_I= conj(I)'* I_cos;
+    conv_Iout= conj(vec2mat(conv_I,1)');
+    conv_Q= conj(Q)'* Q_sin;
+    conv_Qout= conj(vec2mat(conv_Q,1)');
+    IQ_out=conv_Iout + conv_Qout;
+       
+    %   Feedback 수신기
+    rx_IQ_out=vec2mat(IQ_out,X);
+    rx_I_out= conj((rx_IQ_out* conj(I_cos'))');
+    rx_Q_out= conj((rx_IQ_out* conj(Q_sin'))');
+    rx_Or_I_out=rx_I_out*2/X;
+    rx_Or_Q_out=rx_Q_out*2/X;
+    rx_out=rx_Or_I_out + rx_Or_Q_out *i;
+    rx_ps= conj(rx_out');
+    rx_fft=fft(rx_ps);
+    pilot_deos = [rx_fft(1: l / 2, :); ...
+                    rx_fft(size(rx_fft, 1) - l / 2 + 1: size(rx_fft, 1), :)];
+    rx_sp= conj(vec2mat(conj(pilot_deos'), 1)');
+
+    %   송신기
+    N = N0 + l;
+
+    add_z(:, m) = [pilot(1); sp(1: N0 / 2, m); pilot(2); sp(N0 / 2 + 1: N0, m); zeros(l - 2, 1)];
+end
+os = [add_z(1: N / 2, :); zeros((Fs / Fd - 1) * N, size(add_z, 2)); ...
+        add_z(N / 2 + 1: N, :)];
+data_ifft_out=ifft(os);
+
+%================================================================
+%=========================== OFDM ==============================%
+sig = gen_mapping(M, l * Block);
+s_p = conj(vec2mat(sig, l)');
+a_pilot = [];
+% pilot per symbol
+for m = 1: Block
+    a_pilot = [a_pilot P_sp];
+end
+
+% sp = [s_p(1, :); sp(1: N0 / 2, :); s_p(2, :); sp(N0 / 2 + 1: N0, m); s_p(3: l, :)];
+sp = [a_pilot(1, :); sp(1: N0 / 2, :); a_pilot(2, :); sp(N0 / 2 + 1: N0, m); a_pilot(3: l, :)];
+
+os=[sp(1: N /2,:); zeros(N * Fs / Fd - N,size(sp,2)); sp(N /2+1: N,:);];
+ifft_out=ifft(os);                    %IFFT 변조
+ps=vec2mat(ifft_out',1)';       %P/S
+y=ps*Fs/Fd * N;                    
+%============================= CCDF ==============================%
+PAPR=10*log10(max(abs(y).^2)/(norm(y)^2/length(y)));
+
+% TR
+for m = 1: Block
+    PAPR_imp = PAPR;
+    feed = iteration;   % Total roof = iteration * N
+    while feed
+        tone(:, m) = [zeros(N0 + 2, 1); conj(pilot(3: l)')];
+        os_tone(:, m) = [tone(1: N / 2, m); zeros((Fs / Fd - 1) * N, 1); tone(N / 2 + 1: N, m)];
+        tone_ifft_out(:, m) = ifft(os_tone(:, m));
+
+        for n = 1: N
+            if n > 1
+                shift_out = circshift(tone_ifft_out(:, m), 1);
+            else
+                shift_out = tone_ifft_out(:, m);
+            end
+            ifft_out(:, m) = data_ifft_out(:, m) + shift_out;
+
+            ps(m, :) = conj(vec2mat(conj(ifft_out(:, m)'), 1)');
+
+           %============================= CCDF ==============================%
+            PAPR_TR =10*log10(max(abs(ps(m, :)).^2)/(norm(ps(m, :))^2/length(ps(m, :))));
+
+            if PAPR_TR < PAPR_imp
+                PAPR_imp = PAPR_TR;
+                iteration = 0;
+            end
+        end
+        if PAPR_imp >= PAPR
+            pilot(3: l) = gen_mapping(M, l - length(b_r));
+        end
+        feed = feed - 1;
+    end
+end
+
+I_r0 = real(ps);
+Q_r0 = imag(ps);
+
+switch mode
+    case 1,
+        cos_r=org_cos_sampling(X,Fq);
+        sin_r=org_sin_sampling(X,Fq);
+        conv_I = conj(I_r0') * cos_r;
+        conv_Q = conj(Q_r0') * sin_r;
+    case 2,
+        [I_r, Q_r] = IQ_comp(ps, X,Fq, b_r(1), rx_sp(1), 'tx');   % IQ 보상
+        % IQ LO
+        for m = 1: size(I_r, 1)
+            conv_I(m, :) = I_r(m, :) .* I_cos;
+            conv_Q(m, :) = Q_r(m, :) .* Q_sin;
+        end
+end
+
+conv_I0 = conj(I_r0') * I_cos;
+conv_Q0 = conj(Q_r0') * Q_sin;
+
+conv_Iout_r0 = conj(vec2mat(conv_I0, 1)');
+conv_Qout_r0 = conj(vec2mat(conv_Q0, 1)');
+conv_Iout_r= conj(vec2mat(conv_I,1)');
+conv_Qout_r= conj(vec2mat(conv_Q,1)');
+
+IQ_out_r0 = conv_Iout_r0 + conv_Qout_r0;
+IQ_out_r=conv_Iout_r + conv_Qout_r;
+
+y0 = IQ_out_r * Fs / Fd * N;
+y= IQ_out_r *Fs/Fd * N;
+
+% real_ps = norm(real(ps))^2/length(ps)
+% image_ps = norm(imag(ps))^2/length(ps)
+% real_cos = norm(up_cos_ra)^2/length(up_cos_ra)
+% image_sin =  norm(up_sin_ra)^2/length(up_sin_ra)
+% DI=norm(conv_Iout_r)^2/length(conv_Iout_r)
+% DQ=norm(conv_Qout_r)^2/length(conv_Qout_r)
+% E = sum(conv_Iout_r.*conv_Qout_r)/length(conv_Iout_r)
