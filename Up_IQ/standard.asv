@@ -1,0 +1,124 @@
+clear all; clc;
+
+N= 8;    %   Subcarrier number
+Block=100;
+M=4;    %   Mapping method
+D=N*Block;   %   Data number
+X=4;    %   Sampling 
+Fq=1;   %   Frenquency
+C=0;    %   Angle
+upsilon=0;   %   Amplitude
+SNR=0:2:15;
+
+ 
+[b]=gen_mapping(M,D);
+%   정보데이터
+b_r=[1+1*i -1+1*i -1-1*i 1+-1*i];
+I=real(b_r);
+Q=imag(b_r);
+up_cos=cos_sampling(X,Fq,C,upsilon);
+up_sin=sin_sampling(X,C,Fq,upsilon);
+conv_I=(I)'*up_cos;
+conv_Iout=vec2mat(conv_I,1);
+conv_Q=(Q)'*up_sin;
+conv_Qout=vec2mat(conv_Q,1);
+IQ_out=conv_Iout'+conv_Qout';
+       
+%   Feedback 수신기
+rx_IQ_out=vec2mat(IQ_out,X);
+down_cos=org_cos_sampling(X,Fq);
+down_sin=org_sin_sampling(X,Fq);
+rx_I_out=(rx_IQ_out*down_cos')';
+rx_Q_out=(rx_IQ_out*down_sin')';
+rx_Or_I_out=rx_I_out*2/X;
+rx_Or_Q_out=rx_Q_out*2/X;
+rx_out=rx_Or_I_out'+rx_Or_Q_out'*i;
+rx_ps=vec2mat(rx_out',1)';
+            
+%   송신기           
+sp=vec2mat(conj(b),N)';
+ifft_out=ifft(sp);
+ps=vec2mat(ifft_out',1)';
+%   비율계산
+for i=1:D
+    time=i
+    if  real(ps(i))>=0 & imag(ps(i))>=0;
+        rrx_ps(i)=real(ps(i))*(1/real(rx_ps(1)))+j*(imag(ps(i))*(1/imag(rx_ps(1))));
+    elseif  real(ps(i))<0 & imag(ps(i))>=0;
+        rrx_ps(i)=-real(ps(i))*(1/real(rx_ps(2)))+j*(imag(ps(i))*(1/imag(rx_ps(2))));
+    elseif  real(ps(i))<=0 & imag(ps(i))<0;
+        rrx_ps(i)=-real(ps(i))*(1/real(rx_ps(3)))-j*(imag(ps(i))*(1/imag(rx_ps(3))));
+    else    real(ps(i))>0 & imag(ps(i))<0;
+        rrx_ps(i)=real(ps(i))*(1/real(rx_ps(4)))-j*(imag(ps(i))*(1/imag(rx_ps(4))));
+    end;
+end;
+I_r=real(rrx_ps);
+Q_r=imag(rrx_ps);
+up_cos_r=cos_sampling(X,Fq,C,upsilon);
+up_sin_r=sin_sampling(X,C,Fq,upsilon);
+conv_I_r=(I_r)'*up_cos_r;
+conv_Iout_r=vec2mat(conv_I_r,1);
+conv_Q_r=(Q_r)'*up_sin_r;
+conv_Qout_r=vec2mat(conv_Q_r,1);
+IQ_out_r=conv_Iout_r'+conv_Qout_r';
+
+
+%AWGN
+for m=1:length(SNR)
+    snr_wp=10^(SNR(m)/10);  % SNR in decade
+    sigpwr=norm(IQ_out_r)^2./length(IQ_out_r);  %전력공식
+    switch M
+        case 2
+            sgma=sqrt((sigpwr)/snr_wp);
+        case 4
+            sgma=sqrt((sigpwr)/snr_wp);
+        case 16
+             sgma=sqrt((sigpwr)/snr_wp);
+     end
+     n=sgma*randn(1,length(IQ_out_r));
+    rx_signal=(n+IQ_out_r);          
+%     rx_signal=IQ_out_r;
+%수신기 
+rx_IQ_out_r=vec2mat(rx_signal,X);
+down_cos_r=org_cos_sampling(X,Fq);
+down_sin_r=org_sin_sampling(X,Fq);
+rx_I_out_r=(rx_IQ_out_r*down_cos_r')';
+rx_Q_out_r=(rx_IQ_out_r*down_sin_r')';
+rx_Or_I_out_r=rx_I_out_r*2/X;
+rx_Or_Q_out_r=rx_Q_out_r*2/X;
+rx_out_r=rx_Or_I_out_r+rx_Or_Q_out_r*j;
+rx_sp_r=vec2mat(conj(rx_out_r),N)';
+fft_out_r=fft(rx_sp_r);
+rx_ps_r=vec2mat(fft_out_r',1)';
+
+%hard_decision
+in_vector=rx_ps_r;
+out_hard=hard_decision(in_vector,M);
+
+%BER
+A=out_hard;
+B=[b];
+ber(m) = ber_call_qpsk(A,B,M);
+end
+
+% - theory -
+for i = 1: length(SNR)
+    t_snr = 10 ^ (SNR(i) / 10);
+    %theo_err(i) = Q(sqrt(2 * t_snr));
+    theo_err(i) = (1 ./ 2) * erfc(sqrt(t_snr)) - (1 ./ 8) * (erfc(sqrt(t_snr))) .^ 2;
+end
+
+figure(3)
+plot(rx_ps_r,'.'); hold on;
+figure(4)
+semilogy(SNR, theo_err); hold on;
+semilogy(SNR,ber,'r');
+axis([0 12 10^-5 1]);
+
+
+
+
+
+            
+
+

@@ -1,0 +1,5 @@
+I=1;
+Q=1;
+inv_I=0.82635;
+inv_Q=0.82635;
+e=(I*inv_I-Q*inv_Q-I*I+Q*Q)/(I*I+Q*Q);

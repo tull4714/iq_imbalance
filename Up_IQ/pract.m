@@ -1,0 +1,154 @@
+clear all; clc;
+
+N= 16;    %   Subcarrier number
+Block=100;
+M=4;    %   Mapping method
+D=N*Block;   %   Data number
+X= 4;    %   Sampling 
+Fq=1;   %   Frenquency
+
+angle = 0; % deg 
+upsilon=0;   %   Amplitude
+C= angle * pi / 180;    %   Angle
+SNR=0:2:15;
+
+
+[b]=gen_mapping(M,D);
+%   정보데이터
+b_r=[1+1*i -1+1*i -1-1*i 1+-1*i];
+%b_r=[1.17365+1.17365*i -1.17365+1.17365*i -1.17365-1.17365*i 1.17365-1.17365*i];
+sp= conj(b_r)';
+ifft_out=ifft(sp);
+ps=vec2mat(ifft_out',1)';
+I=real(ps);
+Q=imag(ps);
+up_cos=cos_sampling(X,Fq,C,upsilon);
+up_sin=sin_sampling(X,C,Fq,upsilon);
+conv_I=(I)'*up_cos;
+conv_Iout=vec2mat(conv_I,1);
+conv_Q=(Q)'*up_sin;
+conv_Qout=vec2mat(conv_Q,1);
+IQ_out=conv_Iout'+conv_Qout';
+       
+%   Feedback 수신기
+rx_IQ_out=vec2mat(IQ_out,X);
+down_cos=cos_sampling(X,Fq,C,upsilon);
+down_sin=sin_sampling(X,C,Fq,upsilon);
+rx_I_out=(rx_IQ_out*down_cos')';
+rx_Q_out=(rx_IQ_out*down_sin')';
+rx_Or_I_out=rx_I_out*2/X;
+rx_Or_Q_out=rx_Q_out*2/X;
+rx_out=rx_Or_I_out'+rx_Or_Q_out'*i;
+rx_ps=vec2mat(conj(rx_out),N)';
+rx_fft=fft(rx_ps);
+rx_sp=vec2mat(rx_fft',1)';
+
+
+%   송신기   
+sp=vec2mat(conj(b),N)';
+ifft_out=ifft(sp);
+ps=vec2mat(ifft_out',1)';
+
+%   비율계산
+
+com_p=(real(rx_sp(1))-imag(rx_sp(1)))/2;
+
+%   진폭보상
+I_r=2/(2+com_p)*real(ps);
+Q_r=2/(2-com_p)*imag(ps);
+
+% I_r=real(ps);
+% Q_r=imag(ps);
+
+%   위상보상
+com_C= asin((2 * real(b_r(1)) * imag(b_r(1)) ...
+        - (real(b_r(1)) * imag(rx_sp(1)) + real(rx_sp(1)) * imag(b_r(1)))) ...
+        / (real(b_r(1)) ^ 2 + imag(b_r(1)) ^ 2));
+% com_C=0;
+
+up_cos_ra=cos_sampling_a(X,Fq,C,upsilon,C);
+up_sin_ra=sin_sampling_a(X,C,Fq,upsilon,com_C);
+up_cos_ra0=cos_sampling(X,Fq,C,upsilon);
+up_sin_ra0=sin_sampling(X,C,Fq,upsilon);
+m=1:X;
+for t=1:length(m)
+S_IC0(t) = cos(2*Fq*pi*t/X+ pi*C/360) * (cos(pi*C/360) + (tan((2*Fq*pi*t)/X + pi*C/360) * sin(pi*C/360)));
+    S_IC1(t)=cos((2*Fq*pi*t)/X+pi*C/360-pi*C/360);
+S_IC2(t) = cos(pi*C/360) + (tan((2*Fq*pi*t)/X + pi*C/360) * sin(pi*C/360));
+
+end
+ab = up_cos_ra0 .* S_IC2;
+conv_I = (I_r)' * ab;
+conv_I_r=(I_r)'*up_cos_ra0;
+conv_Iout_r=vec2mat(conv_I,1);
+conv_Q_r=(Q_r)'*up_sin_ra;
+conv_Qout_r=vec2mat(conv_Q_r,1);
+IQ_out_r=conv_Iout_r'+conv_Qout_r';
+
+% real_ps = norm(real(ps))^2/length(ps)
+% image_ps = norm(imag(ps))^2/length(ps)
+% real_cos = norm(up_cos_ra)^2/length(up_cos_ra)
+% image_sin =  norm(up_sin_ra)^2/length(up_sin_ra)
+% DI=norm(conv_Iout_r)^2/length(conv_Iout_r)
+% DQ=norm(conv_Qout_r)^2/length(conv_Qout_r)
+% E = sum(conv_Iout_r.*conv_Qout_r)/length(conv_Iout_r)
+
+%AWGN
+for m=1:length(SNR)
+    snr_wp=10^(SNR(m)/10);  % SNR in decade
+    sigpwr=norm(IQ_out_r)^2./length(IQ_out_r);  %전력공식
+    switch M
+        case 2
+            sgma=sqrt((sigpwr)/snr_wp);
+        case 4
+            sgma=sqrt((sigpwr)/snr_wp);
+        case 16
+             sgma=sqrt((sigpwr)/snr_wp);
+     end
+     n=sgma*randn(1,length(IQ_out_r));
+     rx_signal=(n+IQ_out_r);          
+%    rx_signal=IQ_out_r;
+%수신기 
+rx_IQ_out_r=vec2mat(rx_signal,X);
+down_cos_r=org_cos_sampling(X,Fq);
+down_sin_r=org_sin_sampling(X,Fq);
+rx_I_out_r=(rx_IQ_out_r*down_cos_r')';
+rx_Q_out_r=(rx_IQ_out_r*down_sin_r')';
+rx_Or_I_out_r=rx_I_out_r*2/X;
+rx_Or_Q_out_r=rx_Q_out_r*2/X;
+rx_out_r=rx_Or_I_out_r+rx_Or_Q_out_r*j;
+rx_sp_r=vec2mat(conj(rx_out_r),N)';
+fft_out_r=fft(rx_sp_r);
+rx_ps_r=vec2mat(fft_out_r',1)';
+
+%hard_decision
+in_vector=rx_ps_r;
+out_hard=hard_decision(in_vector,M);
+
+%BER
+A=out_hard;
+B=[b];
+ber(m) = ber_call_qpsk(A,B,M);
+end
+
+% - theory -
+for i = 1: length(SNR)
+    t_snr = 10 ^ (SNR(i) / 10);
+    %theo_err(i) = Q(sqrt(2 * t_snr));
+    theo_err(i) = (1 ./ 2) * erfc(sqrt(t_snr)) - (1 ./ 8) * (erfc(sqrt(t_snr))) .^ 2;
+end
+
+figure(5)
+plot(rx_ps_r,'.'); hold on;
+figure(6)
+semilogy(SNR, theo_err); hold on;
+semilogy(SNR,ber,'r');
+axis([0 12 10^-5 1]);
+
+
+
+
+
+            
+
+
