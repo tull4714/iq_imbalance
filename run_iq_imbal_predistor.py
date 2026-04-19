@@ -142,106 +142,109 @@ pred_ber = np.zeros(len(SNR))	# Predistortion
 blstm_ber = np.zeros(len(SNR))	# BLSTM
 theo_err = np.zeros(len(SNR))
 
-org_IQ_out = np.zeros((1, D))
-IQ_out_r = np.zeros((1, D))
-pred_iq_out = np.zeros((1, D))
-blstm_iq_out = np.zeros((1, D))
+b = gen_mapping(M, D)
 
-epsilon = up_upsilon
-phi = up_C
-for i in range(X):
-	b = gen_mapping(M, change_block)
+# Information data
+b_r = np.array([1 + 1j, -1 - 1j])
+pilot = np.concatenate((b_r, -b_r))
+sp = pilot
+ifft_out = np.fft.ifft(sp)
+ps = ifft_out.reshape(1, -1)
+I = np.real(ps)
+Q = np.imag(ps)
 
-	# Information data
-	b_r = np.array([1 + 1j, -1 - 1j])
-	pilot = np.concatenate((b_r, -b_r))
-	sp = pilot
-	ifft_out = np.fft.ifft(sp)
-	ps = ifft_out.reshape(1, -1)
-	I = np.real(ps)
-	Q = np.imag(ps)
+org_up_cos = cos_sampling(X, Fq, 0, 0)      # No IQ imbalance
+org_up_sin = sin_sampling(X, Fq, 0, 0)      # No IQ imbalance
+up_cos_r = cos_sampling(X, Fq, up_C, up_upsilon)
+up_sin_r = sin_sampling(X, Fq, up_C, up_upsilon)
+pilot_I = np.dot(I.reshape(-1, 1), up_cos_r)
+pilot_I_out = pilot_I.reshape(1, -1)
+pilot_Q = np.dot(Q.reshape(-1, 1), up_sin_r)
+pilot_Q_out = pilot_Q.reshape(1, -1)
+pilot_IQ_out = pilot_I_out + pilot_Q_out
 
-	org_up_cos = cos_sampling(X, Fq, 0, 0)      # No IQ imbalance
-	org_up_sin = sin_sampling(X, Fq, 0, 0)      # No IQ imbalance
-	epsilon += 0.1
-	phi += 1
-	up_cos_r = cos_sampling(X, Fq, phi, epsilon)
-	up_sin_r = sin_sampling(X, Fq, phi, epsilon)
-	pilot_I = np.dot(I.reshape(-1, 1), up_cos_r)
-	pilot_I_out = pilot_I.reshape(1, -1)
-	pilot_Q = np.dot(Q.reshape(-1, 1), up_sin_r)
-	pilot_Q_out = pilot_Q.reshape(1, -1)
-	pilot_IQ_out = pilot_I_out + pilot_Q_out
+rx_I_out = np.dot(pilot_IQ_out.reshape(-1, X), up_cos_r.T)
+rx_Q_out = np.dot(pilot_IQ_out.reshape(-1, X), up_sin_r.T)
+rx_Or_I_out = rx_I_out * 2 / X
+rx_Or_Q_out = rx_Q_out * 2 / X
+rx_out = rx_Or_I_out + rx_Or_Q_out * 1j
+rx_ps = rx_out.reshape(1, -1)
+rx_fft = np.fft.fft(rx_ps)
+rx_sp = rx_fft
 
-	rx_I_out = np.dot(pilot_IQ_out.reshape(-1, X), up_cos_r.T)
-	rx_Q_out = np.dot(pilot_IQ_out.reshape(-1, X), up_sin_r.T)
-	rx_Or_I_out = rx_I_out * 2 / X
-	rx_Or_Q_out = rx_Q_out * 2 / X
-	rx_out = rx_Or_I_out + rx_Or_Q_out * 1j
-	rx_ps = rx_out.reshape(1, -1)
-	rx_fft = np.fft.fft(rx_ps)
-	rx_sp = rx_fft
+epsilon, phi = IQ_est(pilot, rx_sp)
+print(f"epsilon: {epsilon}, phi: {phi}\n")
 
-	est_epsilon, est_phi = IQ_est(pilot, rx_sp)
-	print(f"Estimated epsilon: {est_epsilon}, Estimated phi: {est_phi}\n")
+# 송신기
+sp = b.reshape(-1, N)
+ifft_out = np.fft.ifft(sp)
+ps = ifft_out.reshape(-1, 1)
+I_r = np.real(ps)
+Q_r = np.imag(ps)
 
-	# 송신기
-	sp = b.reshape(-1, N)
-	ifft_out = np.fft.ifft(sp)
-	ps = ifft_out.reshape(-1, 1)
-	I_r = np.real(ps)
-	Q_r = np.imag(ps)
+# print(ps.shape)
+# print(up_cos_r.shape)
+# print(up_sin_r.shape)
 
-	print(ps.shape)
+org_I = np.dot(I_r, org_up_cos)           # No IQ imbalance
+org_I_out = org_I.reshape(1, -1)
+org_Q = np.dot(Q_r, org_up_sin)           # No IQ imbalance
+org_Q_out = org_Q.reshape(1, -1)
+org_IQ_out = org_I_out + org_Q_out        # No IQ imbalance
 
-	org_I = np.dot(I_r, org_up_cos)           # No IQ imbalance
-	org_I_out = org_I.reshape(1, -1)
-	org_Q = np.dot(Q_r, org_up_sin)           # No IQ imbalance
-	org_Q_out = org_Q.reshape(1, -1)
-	org_IQ_out[i * change_block: (i + 1) * change_block, :] = org_I_out + org_Q_out        # No IQ imbalance
+conv_I_r = np.dot(I_r, up_cos_r)
+conv_Iout_r = conv_I_r.reshape(1, -1)
+conv_Q_r = np.dot(Q_r, up_sin_r)
+conv_Qout_r = conv_Q_r.reshape(1, -1)
+IQ_out_r = conv_Iout_r + conv_Qout_r
 
-	conv_I_r = np.dot(I_r, up_cos_r)
-	conv_Iout_r = conv_I_r.reshape(1, -1)
-	conv_Q_r = np.dot(Q_r, up_sin_r)
-	conv_Qout_r = conv_Q_r.reshape(1, -1)
-	IQ_out_r[i * change_block: (i + 1) * change_block, :] = conv_Iout_r + conv_Qout_r
+# epsilon = up_upsilon
+# phi = up_C
+# for i in range(X):
+    # up_upsilon = np.round(np.random.uniform(0.2, 0.4), 1)
+    # up_C = np.random.randint(4, 7)
+    # epsilon += 0.1
+    # phi += 1
+    # print(i * change_block)
+    # I_r0[i * change_block: (i + 1) * change_block, :], Q_r0[i * change_block: (i + 1) * change_block, :] =\
+    #        IQ_predistor(ps[i * change_block: (i + 1) * change_block, :], X, Fq, epsilon, phi)
+I_r_Comp = cos_predistor(org_I, X, Fq, epsilon[0, 0], phi[0, 0])
+Q_r_Comp = sin_predistor(org_Q, X, Fq, epsilon[0, 0], phi[0, 0])
 
-	I_r_Comp = cos_predistor(org_I, X, Fq, est_epsilon[0, 0], est_phi[0, 0])
-	Q_r_Comp = sin_predistor(org_Q, X, Fq, est_epsilon[0, 0], est_phi[0, 0])
-	pred_i = I_r_Comp * up_cos_r
-	pred_i_out = pred_i.reshape(1, -1)
-	pred_q = Q_r_Comp * up_sin_r
-	pred_q_out = pred_q.reshape(1, -1)
-	pred_iq_out[i * change_block: (i + 1) * change_block, :] = pred_i_out + pred_q_out
+pred_i = I_r_Comp * up_cos_r
+pred_i_out = pred_i.reshape(1, -1)
+pred_q = Q_r_Comp * up_sin_r
+pred_q_out = pred_q.reshape(1, -1)
+pred_iq_out = pred_i_out + pred_q_out
 
-	#Correct Tx
-	print("start")
-	print(org_I_out.shape)
-	print(org_Q_out.shape)
-	model_corr_r = org_I_out.reshape(-1, N)
-	model_corr_i = org_Q_out.reshape(-1, N)
+#Correct Tx
+print("start")
+print(org_I_out.shape)
+print(org_Q_out.shape)
+model_corr_r = org_I_out.reshape(-1, N)
+model_corr_i = org_Q_out.reshape(-1, N)
 
-	model_corr_r=np.expand_dims(model_corr_r, axis=-1)
-	model_corr_i=np.expand_dims(model_corr_i, axis=-1)
-	keras.backend.clear_session()
-	name_r = '/content/drive/MyDrive/MachineLearning/Predistortion/vlc_lstm_model9_10_r.h5'
-	name_i = '/content/drive/MyDrive/MachineLearning/Predistortion/vlc_lstm_model9_10_i.h5'
-	recovery_dl_r = keras.models.load_model(name_r, custom_objects={'mse': 'mse'})
-	recovery_dl_i = keras.models.load_model(name_i, custom_objects={'mse': 'mse'})
+model_corr_r=np.expand_dims(model_corr_r, axis=-1)
+model_corr_i=np.expand_dims(model_corr_i, axis=-1)
+keras.backend.clear_session()
+name_r = '/content/drive/MyDrive/MachineLearning/Predistortion/vlc_lstm_model9_10_r.h5'
+name_i = '/content/drive/MyDrive/MachineLearning/Predistortion/vlc_lstm_model9_10_i.h5'
+recovery_dl_r = keras.models.load_model(name_r, custom_objects={'mse': 'mse'})
+recovery_dl_i = keras.models.load_model(name_i, custom_objects={'mse': 'mse'})
 
-	sig_in_Linear_dl_r = recovery_dl_r.predict(model_corr_r)
-	sig_in_Linear_dl_i = recovery_dl_i.predict(model_corr_i)
-	conv_Iout_r = sig_in_Linear_dl_r.reshape(1, -1)
-	conv_Qout_r = sig_in_Linear_dl_i.reshape(1, -1)
-	mse = np.mean((pred_i_out - conv_Iout_r) ** 2)
-	print(f"MSE: {mse}\n")
-	print("start 2")
-	blstm_i = conv_Iout_r.reshape(-1, X) * up_cos_r
-	blstm_i_out = blstm_i.reshape(1, -1)
-	blstm_q = conv_Qout_r.reshape(-1, X) * up_sin_r
-	blstma_q_out = blstm_q.reshape(1, -1)
-	blstm_iq_out[i * change_block: (i + 1) * change_block, :] = blstm_i_out + blstma_q_out
-	#------end-----
+sig_in_Linear_dl_r = recovery_dl_r.predict(model_corr_r)
+sig_in_Linear_dl_i = recovery_dl_i.predict(model_corr_i)
+conv_Iout_r = sig_in_Linear_dl_r.reshape(1, -1)
+conv_Qout_r = sig_in_Linear_dl_i.reshape(1, -1)
+mse = np.mean((pred_i_out - conv_Iout_r) ** 2)
+print(f"MSE: {mse}\n")
+print("start 2")
+blstm_i = conv_Iout_r.reshape(-1, X) * up_cos_r
+blstm_i_out = blstm_i.reshape(1, -1)
+blstm_q = conv_Qout_r.reshape(-1, X) * up_sin_r
+blstma_q_out = blstm_q.reshape(1, -1)
+blstm_iq_out = blstm_i_out + blstma_q_out
+#------end-----
 
 # IQ_out_r = ps
 sigpwr_org = np.linalg.norm(org_IQ_out) ** 2 / org_IQ_out.shape[1]
@@ -268,8 +271,6 @@ for m in range(len(SNR)):
   h_normal = (np.random.randn(IQ_out_r.size) + 1j * np.random.randn(IQ_out_r.size)) / np.sqrt(2)
   # IQ compensation
   h_comp = (np.random.randn(pred_iq_out.size) + 1j * np.random.randn(pred_iq_out.size)) / np.sqrt(2)
-  # BLSTM
-  h_blstm = (np.random.randn(blstm_iq_out.size) + 1j * np.random.randn(blstm_iq_out.size)) / np.sqrt(2)
 	  
 	# AWGN
   # org_receive = org_IQ_out + n                          # No IQ imbalance
@@ -277,17 +278,17 @@ for m in range(len(SNR)):
   # pred_rev = pred_iq_out + n
   # blstm_rev = blstm_iq_out + n
 	
-  # Fading + AWGN
+	# Fading + AWGN
   org_receive = h_Ideal * org_IQ_out + n_org			# Ideal
   receive_data = h_normal * IQ_out_r + n	# Normal
   pred_rev = h_comp * pred_iq_out + n_pred		# IQ compensation
-  blstm_rev = h_blstm * blstm_iq_out + n_blstm
+  blstm_rev = h_comp * blstm_iq_out + n_blstm
 	  
   # Equalization
   org_receive = org_receive / h_Ideal			# Ideal
   receive_data = receive_data / h_normal	# Normal
   pred_rev = pred_rev / h_comp		# IQ compensation
-  blstm_rev = blstm_rev / h_blstm
+  blstm_rev = blstm_rev / h_comp
 	
   org_rx_IQ_out = org_receive.reshape(-1, X)
   rx_IQ_out_r = receive_data.reshape(-1, X)
@@ -346,7 +347,8 @@ for m in range(len(SNR)):
   ber[m] = ber_call_qpsk(out_hard, b, M)		      # IQ imabalance
   pred_ber[m] = ber_call_qpsk(pred_hard, b, M)	      # Predistortion
   blstm_ber[m] = ber_call_qpsk(blstm_hard, b, M)		  # BLSTM
-	
+  print(org_ber[m], ber[m], pred_ber[m], blstm_ber[m])
+ 
 print(f"Ideal BER: {org_ber}\n")
 print(f"IQ imbalance BER: {ber}\n")
 print(f"Predistortion BER: {pred_ber}\n")
@@ -362,7 +364,7 @@ for i in range(len(SNR)):
 
 plt.figure(4)
 plt.semilogy(SNR, org_ber, 'g', label='No IQ imabalance BER')
-plt.semilogy(SNR, theo_err, 'k', label='Theoretical BER')
+# plt.semilogy(SNR, theo_err, 'k', label='Theoretical BER')
 plt.semilogy(SNR, ber, 'b', label='Simulated BER')
 plt.semilogy(SNR, pred_ber, 'r', label='Predistortion BER')
 plt.semilogy(SNR, blstm_ber, 'm', label='BLSTM BER')
