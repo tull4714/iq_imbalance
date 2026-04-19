@@ -135,116 +135,116 @@ down_upsilon = 0 #np.random.random_sample() * 0.3
 # print(f"Up C: {up_C}, Down C: {down_C}\n")
 # print(f"Up Upsilon: {up_upsilon}, Down Upsilon: {down_upsilon}\n")
 
+ch_mode = 2	# 0: AWGN, 1: Rayleigh, 2: Rician
+K = 5	# Rician K factor (0 ~ K)
+
 SNR = np.arange(0, 20, 2)
-org_ber = np.zeros(len(SNR))
-ber = np.zeros(len(SNR))
-pred_ber = np.zeros(len(SNR))	# Predistortion
-blstm_ber = np.zeros(len(SNR))	# BLSTM
+org_ber = np.zeros((K, len(SNR)))
+ber = np.zeros((K, len(SNR)))
+pred_ber = np.zeros((K, len(SNR)))	# Predistortion
+blstm_ber = np.zeros((K, len(SNR)))	# BLSTM
 theo_err = np.zeros(len(SNR))
 
-b = gen_mapping(M, D)
+org_IQ_out = np.zeros((1, D))
+IQ_out_r = np.zeros((1, D))
+pred_iq_out = np.zeros((1, D))
+blstm_iq_out = np.zeros((1, D))
 
-# Information data
-b_r = np.array([1 + 1j, -1 - 1j])
-pilot = np.concatenate((b_r, -b_r))
-sp = pilot
-ifft_out = np.fft.ifft(sp)
-ps = ifft_out.reshape(1, -1)
-I = np.real(ps)
-Q = np.imag(ps)
+epsilon = up_upsilon
+phi = up_C
+for i in range(X):
+	b = gen_mapping(M, change_block)
 
-org_up_cos = cos_sampling(X, Fq, 0, 0)      # No IQ imbalance
-org_up_sin = sin_sampling(X, Fq, 0, 0)      # No IQ imbalance
-up_cos_r = cos_sampling(X, Fq, up_C, up_upsilon)
-up_sin_r = sin_sampling(X, Fq, up_C, up_upsilon)
-pilot_I = np.dot(I.reshape(-1, 1), up_cos_r)
-pilot_I_out = pilot_I.reshape(1, -1)
-pilot_Q = np.dot(Q.reshape(-1, 1), up_sin_r)
-pilot_Q_out = pilot_Q.reshape(1, -1)
-pilot_IQ_out = pilot_I_out + pilot_Q_out
+	# Information data
+	b_r = np.array([1 + 1j, -1 - 1j])
+	pilot = np.concatenate((b_r, -b_r))
+	sp = pilot
+	ifft_out = np.fft.ifft(sp)
+	ps = ifft_out.reshape(1, -1)
+	I = np.real(ps)
+	Q = np.imag(ps)
 
-rx_I_out = np.dot(pilot_IQ_out.reshape(-1, X), up_cos_r.T)
-rx_Q_out = np.dot(pilot_IQ_out.reshape(-1, X), up_sin_r.T)
-rx_Or_I_out = rx_I_out * 2 / X
-rx_Or_Q_out = rx_Q_out * 2 / X
-rx_out = rx_Or_I_out + rx_Or_Q_out * 1j
-rx_ps = rx_out.reshape(1, -1)
-rx_fft = np.fft.fft(rx_ps)
-rx_sp = rx_fft
+	org_up_cos = cos_sampling(X, Fq, 0, 0)      # No IQ imbalance
+	org_up_sin = sin_sampling(X, Fq, 0, 0)      # No IQ imbalance
+	epsilon += 0.1
+	phi += 1
+	up_cos_r = cos_sampling(X, Fq, phi, epsilon)
+	up_sin_r = sin_sampling(X, Fq, phi, epsilon)
+	pilot_I = np.dot(I.reshape(-1, 1), up_cos_r)
+	pilot_I_out = pilot_I.reshape(1, -1)
+	pilot_Q = np.dot(Q.reshape(-1, 1), up_sin_r)
+	pilot_Q_out = pilot_Q.reshape(1, -1)
+	pilot_IQ_out = pilot_I_out + pilot_Q_out
 
-epsilon, phi = IQ_est(pilot, rx_sp)
-print(f"epsilon: {epsilon}, phi: {phi}\n")
+	rx_I_out = np.dot(pilot_IQ_out.reshape(-1, X), up_cos_r.T)
+	rx_Q_out = np.dot(pilot_IQ_out.reshape(-1, X), up_sin_r.T)
+	rx_Or_I_out = rx_I_out * 2 / X
+	rx_Or_Q_out = rx_Q_out * 2 / X
+	rx_out = rx_Or_I_out + rx_Or_Q_out * 1j
+	rx_ps = rx_out.reshape(1, -1)
+	rx_fft = np.fft.fft(rx_ps)
+	rx_sp = rx_fft
 
-# 송신기
-sp = b.reshape(-1, N)
-ifft_out = np.fft.ifft(sp)
-ps = ifft_out.reshape(-1, 1)
-I_r = np.real(ps)
-Q_r = np.imag(ps)
+	est_epsilon, est_phi = IQ_est(pilot, rx_sp)
+	print(f"Estimated epsilon: {est_epsilon}, Estimated phi: {est_phi}\n")
 
-# print(ps.shape)
-# print(up_cos_r.shape)
-# print(up_sin_r.shape)
+	# 송신기
+	sp = b.reshape(-1, N)
+	ifft_out = np.fft.ifft(sp)
+	ps = ifft_out.reshape(-1, 1)
+	I_r = np.real(ps)
+	Q_r = np.imag(ps)
 
-org_I = np.dot(I_r, org_up_cos)           # No IQ imbalance
-org_I_out = org_I.reshape(1, -1)
-org_Q = np.dot(Q_r, org_up_sin)           # No IQ imbalance
-org_Q_out = org_Q.reshape(1, -1)
-org_IQ_out = org_I_out + org_Q_out        # No IQ imbalance
+	print(ps.shape)
 
-conv_I_r = np.dot(I_r, up_cos_r)
-conv_Iout_r = conv_I_r.reshape(1, -1)
-conv_Q_r = np.dot(Q_r, up_sin_r)
-conv_Qout_r = conv_Q_r.reshape(1, -1)
-IQ_out_r = conv_Iout_r + conv_Qout_r
+	org_I = np.dot(I_r, org_up_cos)           # No IQ imbalance
+	org_I_out = org_I.reshape(1, -1)
+	org_Q = np.dot(Q_r, org_up_sin)           # No IQ imbalance
+	org_Q_out = org_Q.reshape(1, -1)
+	org_IQ_out[i * change_block: (i + 1) * change_block, :] = org_I_out + org_Q_out        # No IQ imbalance
 
-# epsilon = up_upsilon
-# phi = up_C
-# for i in range(X):
-    # up_upsilon = np.round(np.random.uniform(0.2, 0.4), 1)
-    # up_C = np.random.randint(4, 7)
-    # epsilon += 0.1
-    # phi += 1
-    # print(i * change_block)
-    # I_r0[i * change_block: (i + 1) * change_block, :], Q_r0[i * change_block: (i + 1) * change_block, :] =\
-    #        IQ_predistor(ps[i * change_block: (i + 1) * change_block, :], X, Fq, epsilon, phi)
-I_r_Comp = cos_predistor(org_I, X, Fq, epsilon[0, 0], phi[0, 0])
-Q_r_Comp = sin_predistor(org_Q, X, Fq, epsilon[0, 0], phi[0, 0])
+	conv_I_r = np.dot(I_r, up_cos_r)
+	conv_Iout_r = conv_I_r.reshape(1, -1)
+	conv_Q_r = np.dot(Q_r, up_sin_r)
+	conv_Qout_r = conv_Q_r.reshape(1, -1)
+	IQ_out_r[i * change_block: (i + 1) * change_block, :] = conv_Iout_r + conv_Qout_r
 
-pred_i = I_r_Comp * up_cos_r
-pred_i_out = pred_i.reshape(1, -1)
-pred_q = Q_r_Comp * up_sin_r
-pred_q_out = pred_q.reshape(1, -1)
-pred_iq_out = pred_i_out + pred_q_out
+	I_r_Comp = cos_predistor(org_I, X, Fq, est_epsilon[0, 0], est_phi[0, 0])
+	Q_r_Comp = sin_predistor(org_Q, X, Fq, est_epsilon[0, 0], est_phi[0, 0])
+	pred_i = I_r_Comp * up_cos_r
+	pred_i_out = pred_i.reshape(1, -1)
+	pred_q = Q_r_Comp * up_sin_r
+	pred_q_out = pred_q.reshape(1, -1)
+	pred_iq_out[i * change_block: (i + 1) * change_block, :] = pred_i_out + pred_q_out
 
-#Correct Tx
-print("start")
-print(org_I_out.shape)
-print(org_Q_out.shape)
-model_corr_r = org_I_out.reshape(-1, N)
-model_corr_i = org_Q_out.reshape(-1, N)
+	#Correct Tx
+	print("start")
+	print(org_I_out.shape)
+	print(org_Q_out.shape)
+	model_corr_r = org_I_out.reshape(-1, N)
+	model_corr_i = org_Q_out.reshape(-1, N)
 
-model_corr_r=np.expand_dims(model_corr_r, axis=-1)
-model_corr_i=np.expand_dims(model_corr_i, axis=-1)
-keras.backend.clear_session()
-name_r = '/content/drive/MyDrive/MachineLearning/Predistortion/vlc_lstm_model9_10_r.h5'
-name_i = '/content/drive/MyDrive/MachineLearning/Predistortion/vlc_lstm_model9_10_i.h5'
-recovery_dl_r = keras.models.load_model(name_r, custom_objects={'mse': 'mse'})
-recovery_dl_i = keras.models.load_model(name_i, custom_objects={'mse': 'mse'})
+	model_corr_r=np.expand_dims(model_corr_r, axis=-1)
+	model_corr_i=np.expand_dims(model_corr_i, axis=-1)
+	keras.backend.clear_session()
+	name_r = '/content/drive/MyDrive/MachineLearning/Predistortion/vlc_lstm_model9_10_r.h5'
+	name_i = '/content/drive/MyDrive/MachineLearning/Predistortion/vlc_lstm_model9_10_i.h5'
+	recovery_dl_r = keras.models.load_model(name_r, custom_objects={'mse': 'mse'})
+	recovery_dl_i = keras.models.load_model(name_i, custom_objects={'mse': 'mse'})
 
-sig_in_Linear_dl_r = recovery_dl_r.predict(model_corr_r)
-sig_in_Linear_dl_i = recovery_dl_i.predict(model_corr_i)
-conv_Iout_r = sig_in_Linear_dl_r.reshape(1, -1)
-conv_Qout_r = sig_in_Linear_dl_i.reshape(1, -1)
-mse = np.mean((pred_i_out - conv_Iout_r) ** 2)
-print(f"MSE: {mse}\n")
-print("start 2")
-blstm_i = conv_Iout_r.reshape(-1, X) * up_cos_r
-blstm_i_out = blstm_i.reshape(1, -1)
-blstm_q = conv_Qout_r.reshape(-1, X) * up_sin_r
-blstma_q_out = blstm_q.reshape(1, -1)
-blstm_iq_out = blstm_i_out + blstma_q_out
-#------end-----
+	sig_in_Linear_dl_r = recovery_dl_r.predict(model_corr_r)
+	sig_in_Linear_dl_i = recovery_dl_i.predict(model_corr_i)
+	conv_Iout_r = sig_in_Linear_dl_r.reshape(1, -1)
+	conv_Qout_r = sig_in_Linear_dl_i.reshape(1, -1)
+	mse = np.mean((pred_i_out - conv_Iout_r) ** 2)
+	print(f"MSE: {mse}\n")
+	print("start 2")
+	blstm_i = conv_Iout_r.reshape(-1, X) * up_cos_r
+	blstm_i_out = blstm_i.reshape(1, -1)
+	blstm_q = conv_Qout_r.reshape(-1, X) * up_sin_r
+	blstma_q_out = blstm_q.reshape(1, -1)
+	blstm_iq_out[i * change_block: (i + 1) * change_block, :] = blstm_i_out + blstma_q_out
+	#------end-----
 
 # IQ_out_r = ps
 sigpwr_org = np.linalg.norm(org_IQ_out) ** 2 / org_IQ_out.shape[1]
@@ -252,103 +252,115 @@ sigpwr = np.linalg.norm(IQ_out_r) ** 2 / IQ_out_r.shape[1]
 sigpwr_pred = np.linalg.norm(pred_iq_out) ** 2 / pred_iq_out.shape[1]
 sigpwr_blstm = np.linalg.norm(blstm_iq_out) ** 2 / blstm_iq_out.shape[1]
 
-for m in range(len(SNR)):
-  snr_wp = 10 ** (SNR[m] / 10)
-  sgma_org = np.sqrt(X * sigpwr_org / snr_wp / 2 / np.log2(M))
-  sgma = np.sqrt(X * sigpwr / snr_wp / 2 / np.log2(M))
-  sgma_pred = np.sqrt(X * sigpwr_pred / snr_wp / 2 / np.log2(M))
-  sgma_blstm = np.sqrt(X * sigpwr_blstm / snr_wp / 2 / np.log2(M))
-  
-  n_org = sgma_org * np.random.randn(1, np.size(org_IQ_out))
-  n = sgma * np.random.randn(1, np.size(IQ_out_r))
-  n_pred = sgma_pred * np.random.randn(1, np.size(pred_iq_out))
-  n_blstm = sgma_blstm * np.random.randn(1, np.size(blstm_iq_out))
-  
-  # Rayleigh Fading
-  # Ideal
-  h_Ideal = (np.random.randn(org_IQ_out.size) + 1j * np.random.randn(org_IQ_out.size)) / np.sqrt(2)
-  # Normal
-  h_normal = (np.random.randn(IQ_out_r.size) + 1j * np.random.randn(IQ_out_r.size)) / np.sqrt(2)
-  # IQ compensation
-  h_comp = (np.random.randn(pred_iq_out.size) + 1j * np.random.randn(pred_iq_out.size)) / np.sqrt(2)
-	  
-	# AWGN
-  # org_receive = org_IQ_out + n                          # No IQ imbalance
-  # receive_data = IQ_out_r + n
-  # pred_rev = pred_iq_out + n
-  # blstm_rev = blstm_iq_out + n
+for i_k in range(0, K):
+  print("Rician K factor: ", i_k)
+  for m in range(len(SNR)):
+    snr_wp = 10 ** (SNR[m] / 10)
+    sgma_org = np.sqrt(X * sigpwr_org / snr_wp / 2 / np.log2(M))
+    sgma = np.sqrt(X * sigpwr / snr_wp / 2 / np.log2(M))
+    sgma_pred = np.sqrt(X * sigpwr_pred / snr_wp / 2 / np.log2(M))
+    sgma_blstm = np.sqrt(X * sigpwr_blstm / snr_wp / 2 / np.log2(M))
+    
+    n_org = sgma_org * np.random.randn(1, np.size(org_IQ_out))
+    n = sgma * np.random.randn(1, np.size(IQ_out_r))
+    n_pred = sgma_pred * np.random.randn(1, np.size(pred_iq_out))
+    n_blstm = sgma_blstm * np.random.randn(1, np.size(blstm_iq_out))
+    
+    if(ch_mode == 0):	# AWGN
+      org_receive = org_IQ_out + n                          # No IQ imbalance
+      receive_data = IQ_out_r + n
+      pred_rev = pred_iq_out + n
+      blstm_rev = blstm_iq_out + n
+    elif(ch_mode == 1):	# Rayleigh Fading
+      # Ideal channel
+      h_Ideal = (np.random.randn(org_IQ_out.size) + 1j * np.random.randn(org_IQ_out.size)) / np.sqrt(2)
+			# Normal channel
+      h_normal = (np.random.randn(IQ_out_r.size) + 1j * np.random.randn(IQ_out_r.size)) / np.sqrt(2)
+			# IQ compensation channel
+      h_comp = (np.random.randn(pred_iq_out.size) + 1j * np.random.randn(pred_iq_out.size)) / np.sqrt(2)
+			# BLSTM channel
+      h_blstm = (np.random.randn(blstm_iq_out.size) + 1j * np.random.randn(blstm_iq_out.size)) / np.sqrt(2)
 	
-	# Fading + AWGN
-  org_receive = h_Ideal * org_IQ_out + n_org			# Ideal
-  receive_data = h_normal * IQ_out_r + n	# Normal
-  pred_rev = h_comp * pred_iq_out + n_pred		# IQ compensation
-  blstm_rev = h_comp * blstm_iq_out + n_blstm
+			# Rayleigh + AWGN
+      org_receive = h_Ideal * org_IQ_out + n_org			# Ideal
+      receive_data = h_normal * IQ_out_r + n	# Normal
+      pred_rev = h_comp * pred_iq_out + n_pred		# IQ compensation
+      blstm_rev = h_blstm * blstm_iq_out + n_blstm
 	  
-  # Equalization
-  org_receive = org_receive / h_Ideal			# Ideal
-  receive_data = receive_data / h_normal	# Normal
-  pred_rev = pred_rev / h_comp		# IQ compensation
-  blstm_rev = blstm_rev / h_comp
-	
-  org_rx_IQ_out = org_receive.reshape(-1, X)
-  rx_IQ_out_r = receive_data.reshape(-1, X)
-  pred_rx_iq = pred_rev.reshape(-1, X)
-  blstm_rx_iq = blstm_rev.reshape(-1, X)
-  
-  org_down_cos = cos_sampling(X, Fq, 0, 0)              # No IQ imbalance
-  org_down_sin = sin_sampling(X, Fq, 0, 0)              # No IQ imbalance
-  down_cos_r = cos_sampling(X, Fq, down_C, down_upsilon)
-  down_sin_r = sin_sampling(X, Fq, down_C, down_upsilon)
-  
-  org_rx_I_out = np.dot(org_rx_IQ_out, org_down_cos.T)  # No IQ imbalance
-  org_rx_Q_out = np.dot(org_rx_IQ_out, org_down_sin.T)  # No IQ imbalance
-  rx_I_out_r = np.dot(rx_IQ_out_r, down_cos_r.T)
-  rx_Q_out_r = np.dot(rx_IQ_out_r, down_sin_r.T)
-  pred_rx_i = np.dot(pred_rx_iq, down_cos_r.T)
-  pred_rx_q = np.dot(pred_rx_iq, down_sin_r.T)
-  blstm_rx_i = np.dot(blstm_rx_iq, down_cos_r.T)
-  blstm_rx_q = np.dot(blstm_rx_iq, down_sin_r.T)
-  
-  org_rx_Or_I_out = org_rx_I_out * 2 / X                # No IQ imbalance
-  org_rx_Or_Q_out = org_rx_Q_out * 2 / X                # No IQ imbalance
-  rx_Or_I_out_r = rx_I_out_r * 2 / X  # cos(theta) ** 2 = 1 / 2 + cos(2 * theta)
-  rx_Or_Q_out_r = rx_Q_out_r * 2 / X  # sin(theta) ** 2 = 1 / 2 - cos(2 * theta)
-  scale_pred_i = pred_rx_i * 2 / X
-  scale_pred_q = pred_rx_q * 2 / X
-  scale_blstm_i = blstm_rx_i * 2 / X
-  scale_blstm_q = blstm_rx_q * 2 / X
-  
-  org_rx_out = org_rx_Or_I_out + org_rx_Or_Q_out * 1j   # No IQ imbalance
-  rx_out_r = rx_Or_I_out_r + rx_Or_Q_out_r * 1j	      # IQ imbalance
-  pred_rx_out = scale_pred_i + scale_pred_q * 1j	      # Predistortion
-  blstm_rx_out = scale_blstm_i + scale_blstm_q * 1j	  # BLSTM
-  
-  org_rx_sp = org_rx_out.reshape(-1, N)                 # No IQ imbalance
-  rx_sp_r = rx_out_r.reshape(-1, N)		      # IQ imabalance
-  pred_rx_sp = pred_rx_out.reshape(-1, N)		      # Predistortion
-  blstm_rx_sp = blstm_rx_out.reshape(-1, N)			  # BLSTM
-  
-  org_fft_out = np.fft.fft(org_rx_sp, N)                # No IQ imbalance
-  fft_out_r = np.fft.fft(rx_sp_r, N)		      # IQ imabalance
-  pred_fft_out = np.fft.fft(pred_rx_sp, N)	      # Predistortion
-  blstm_fft_out = np.fft.fft(blstm_rx_sp, N)			  # BLSTM
-  
-  org_rx_ps = org_fft_out.reshape(1, -1)                # No IQ imbalance
-  rx_ps_r = fft_out_r.reshape(1, -1)		      # IQ imabalance
-  pred_rx_ps = pred_fft_out.reshape(1, -1)	      # Predistortion
-  blstm_rx_ps = blstm_fft_out.reshape(1, -1)			  # BLSTM
-  
-  org_hard = hard_decision(org_rx_ps, M)                # No IQ imbalance
-  out_hard = hard_decision(rx_ps_r, M)		      # IQ imabalance
-  pred_hard = hard_decision(pred_rx_ps, M)	      # Predistortion
-  blstm_hard = hard_decision(blstm_rx_ps, M)			  # BLSTM
-  
-  org_ber[m] = ber_call_qpsk(org_hard, b, M)            # No IQ imbalance
-  ber[m] = ber_call_qpsk(out_hard, b, M)		      # IQ imabalance
-  pred_ber[m] = ber_call_qpsk(pred_hard, b, M)	      # Predistortion
-  blstm_ber[m] = ber_call_qpsk(blstm_hard, b, M)		  # BLSTM
-  print(org_ber[m], ber[m], pred_ber[m], blstm_ber[m])
- 
+			# Equalization
+      org_receive = org_receive / h_Ideal			# Ideal
+      receive_data = receive_data / h_normal	# Normal
+      pred_rev = pred_rev / h_comp		# IQ compensation
+      blstm_rev = blstm_rev / h_blstm
+    else:
+      # Rician Fading
+      k_0 = 4 * (i_k + 1)
+      frame = org_IQ_out.size
+      h = np.sqrt(k_0 / (1 + k_0)) * np.ones((1, frame)) + np.sqrt(1 / (1 + k_0)) * ((np.random.randn(1, frame) + 1j * np.random.randn(1, frame)) / np.sqrt(2))
+      org_receive = h * org_IQ_out + n_org			# Ideal
+      receive_data = h_normal * IQ_out_r + n	# Normal
+      pred_rev = h * pred_iq_out + n_pred		# IQ compensation
+      blstm_rev = h * blstm_iq_out + n_blstm
+      
+    org_rx_IQ_out = org_receive.reshape(-1, X)
+    rx_IQ_out_r = receive_data.reshape(-1, X)
+    pred_rx_iq = pred_rev.reshape(-1, X)
+    blstm_rx_iq = blstm_rev.reshape(-1, X)
+    
+    org_down_cos = cos_sampling(X, Fq, 0, 0)              # No IQ imbalance
+    org_down_sin = sin_sampling(X, Fq, 0, 0)              # No IQ imbalance
+    down_cos_r = cos_sampling(X, Fq, down_C, down_upsilon)
+    down_sin_r = sin_sampling(X, Fq, down_C, down_upsilon)
+    
+    org_rx_I_out = np.dot(org_rx_IQ_out, org_down_cos.T)  # No IQ imbalance
+    org_rx_Q_out = np.dot(org_rx_IQ_out, org_down_sin.T)  # No IQ imbalance
+    rx_I_out_r = np.dot(rx_IQ_out_r, down_cos_r.T)
+    rx_Q_out_r = np.dot(rx_IQ_out_r, down_sin_r.T)
+    pred_rx_i = np.dot(pred_rx_iq, down_cos_r.T)
+    pred_rx_q = np.dot(pred_rx_iq, down_sin_r.T)
+    blstm_rx_i = np.dot(blstm_rx_iq, down_cos_r.T)
+    blstm_rx_q = np.dot(blstm_rx_iq, down_sin_r.T)
+    
+    org_rx_Or_I_out = org_rx_I_out * 2 / X                # No IQ imbalance
+    org_rx_Or_Q_out = org_rx_Q_out * 2 / X                # No IQ imbalance
+    rx_Or_I_out_r = rx_I_out_r * 2 / X  # cos(theta) ** 2 = 1 / 2 + cos(2 * theta)
+    rx_Or_Q_out_r = rx_Q_out_r * 2 / X  # sin(theta) ** 2 = 1 / 2 - cos(2 * theta)
+    scale_pred_i = pred_rx_i * 2 / X
+    scale_pred_q = pred_rx_q * 2 / X
+    scale_blstm_i = blstm_rx_i * 2 / X
+    scale_blstm_q = blstm_rx_q * 2 / X
+    
+    org_rx_out = org_rx_Or_I_out + org_rx_Or_Q_out * 1j   # No IQ imbalance
+    rx_out_r = rx_Or_I_out_r + rx_Or_Q_out_r * 1j	      # IQ imbalance
+    pred_rx_out = scale_pred_i + scale_pred_q * 1j	      # Predistortion
+    blstm_rx_out = scale_blstm_i + scale_blstm_q * 1j	  # BLSTM
+    
+    org_rx_sp = org_rx_out.reshape(-1, N)                 # No IQ imbalance
+    rx_sp_r = rx_out_r.reshape(-1, N)		      # IQ imabalance
+    pred_rx_sp = pred_rx_out.reshape(-1, N)		      # Predistortion
+    blstm_rx_sp = blstm_rx_out.reshape(-1, N)			  # BLSTM
+    
+    org_fft_out = np.fft.fft(org_rx_sp, N)                # No IQ imbalance
+    fft_out_r = np.fft.fft(rx_sp_r, N)		      # IQ imabalance
+    pred_fft_out = np.fft.fft(pred_rx_sp, N)	      # Predistortion
+    blstm_fft_out = np.fft.fft(blstm_rx_sp, N)			  # BLSTM
+    
+    org_rx_ps = org_fft_out.reshape(1, -1)                # No IQ imbalance
+    rx_ps_r = fft_out_r.reshape(1, -1)		      # IQ imabalance
+    pred_rx_ps = pred_fft_out.reshape(1, -1)	      # Predistortion
+    blstm_rx_ps = blstm_fft_out.reshape(1, -1)			  # BLSTM
+    
+    org_hard = hard_decision(org_rx_ps, M)                # No IQ imbalance
+    out_hard = hard_decision(rx_ps_r, M)		      # IQ imabalance
+    pred_hard = hard_decision(pred_rx_ps, M)	      # Predistortion
+    blstm_hard = hard_decision(blstm_rx_ps, M)			  # BLSTM
+    
+    org_ber[i_k, m] = ber_call_qpsk(org_hard, b, M)            # No IQ imbalance
+    ber[i_k, m] = ber_call_qpsk(out_hard, b, M)		      # IQ imabalance
+    pred_ber[i_k, m] = ber_call_qpsk(pred_hard, b, M)	      # Predistortion
+    blstm_ber[i_k, m] = ber_call_qpsk(blstm_hard, b, M)		  # BLSTM
+    print(org_ber[i_k, m], ber[i_k, m], pred_ber[i_k, m], blstm_ber[i_k, m])
+		
 print(f"Ideal BER: {org_ber}\n")
 print(f"IQ imbalance BER: {ber}\n")
 print(f"Predistortion BER: {pred_ber}\n")
@@ -364,7 +376,8 @@ for i in range(len(SNR)):
 
 plt.figure(4)
 plt.semilogy(SNR, org_ber, 'g', label='No IQ imabalance BER')
-# plt.semilogy(SNR, theo_err, 'k', label='Theoretical BER')
+if ch_mode == 0:
+	plt.semilogy(SNR, theo_err, 'k', label='Theoretical BER')
 plt.semilogy(SNR, ber, 'b', label='Simulated BER')
 plt.semilogy(SNR, pred_ber, 'r', label='Predistortion BER')
 plt.semilogy(SNR, blstm_ber, 'm', label='BLSTM BER')
