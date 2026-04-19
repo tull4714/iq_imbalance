@@ -6,6 +6,23 @@ from scipy.special import erfc
 
 from tensorflow import keras
 
+# 훈련 시와 동일한 정규화 함수 추가
+def normalize_with_rms(I_data, Q_data):
+    """RMS 기반 정규화로 더 안정적인 정규화"""
+    magnitude = np.sqrt(I_data**2 + Q_data**2)
+    rms_magnitude = np.sqrt(np.mean(magnitude**2))
+    if rms_magnitude > 0:
+        I_data_normalized = I_data / rms_magnitude
+        Q_data_normalized = Q_data / rms_magnitude
+    else:
+        I_data_normalized = I_data
+        Q_data_normalized = Q_data
+    return I_data_normalized, Q_data_normalized, rms_magnitude
+
+def denormalize_with_rms(I_data, Q_data, rms_magnitude):
+    """RMS 기반 역정규화"""
+    return I_data * rms_magnitude, Q_data * rms_magnitude
+	
 def gen_mapping(M, D):
     np.random.seed(1)
     rand_I = np.random.rand(1, D)
@@ -221,9 +238,16 @@ for i in range(X):
 	print("start")
 	print(org_I_out.shape)
 	print(org_Q_out.shape)
-	model_corr_r = org_I_out.reshape(-1, N)
-	model_corr_i = org_Q_out.reshape(-1, N)
-
+	
+	# 수정: 훈련 시와 동일한 정규화 적용
+    blstm_I_norm, blstm_Q_norm, rms_mag = normalize_with_rms(org_I_out, org_Q_out)
+	
+	# model_corr_r = org_I_out.reshape(-1, N)
+	# model_corr_i = org_Q_out.reshape(-1, N)
+	# BLSTM Predistorter
+    model_corr_r = blstm_I_norm.reshape(-1, N)
+    model_corr_i = blstm_Q_norm.reshape(-1, N)
+	
 	model_corr_r=np.expand_dims(model_corr_r, axis=-1)
 	model_corr_i=np.expand_dims(model_corr_i, axis=-1)
 	keras.backend.clear_session()
@@ -234,14 +258,20 @@ for i in range(X):
 
 	sig_in_Linear_dl_r = recovery_dl_r.predict(model_corr_r)
 	sig_in_Linear_dl_i = recovery_dl_i.predict(model_corr_i)
-	conv_Iout_r = sig_in_Linear_dl_r.reshape(1, -1)
-	conv_Qout_r = sig_in_Linear_dl_i.reshape(1, -1)
-	mse = np.mean((pred_i_out - conv_Iout_r) ** 2)
+	blstm_I_r_norm = sig_in_Linear_dl_r.reshape(1, -1)
+	blstm_Q_r_norm = sig_in_Linear_dl_i.reshape(1, -1)
+	
+	# 역정규화
+    blstm_I_r, blstm_Q_r = denormalize_with_rms(blstm_I_r_norm.flatten(), 
+                                                blstm_Q_r_norm.flatten(), 
+                                                rms_mag)
+	
+	mse = np.mean((pred_i_out - blstm_I_r) ** 2)
 	print(f"MSE: {mse}\n")
 	print("start 2")
-	blstm_i = conv_Iout_r.reshape(-1, X) * up_cos_r
+	blstm_i = blstm_I_r.reshape(-1, X) * up_cos_r
 	blstm_i_out = blstm_i.reshape(1, -1)
-	blstm_q = conv_Qout_r.reshape(-1, X) * up_sin_r
+	blstm_q = blstm_Q_r.reshape(-1, X) * up_sin_r
 	blstma_q_out = blstm_q.reshape(1, -1)
 	blstm_iq_out[i * change_block: (i + 1) * change_block, :] = blstm_i_out + blstma_q_out
 	#------end-----
@@ -298,7 +328,7 @@ for i_k in range(0, K):
       frame = org_IQ_out.size
       h = np.sqrt(k_0 / (1 + k_0)) * np.ones((1, frame)) + np.sqrt(1 / (1 + k_0)) * ((np.random.randn(1, frame) + 1j * np.random.randn(1, frame)) / np.sqrt(2))
       org_receive = h * org_IQ_out + n_org			# Ideal
-      receive_data = h_normal * IQ_out_r + n	# Normal
+      receive_data = h * IQ_out_r + n	# Normal
       pred_rev = h * pred_iq_out + n_pred		# IQ compensation
       blstm_rev = h * blstm_iq_out + n_blstm
       
