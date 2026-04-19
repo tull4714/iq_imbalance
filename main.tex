@@ -15,7 +15,7 @@
 
 \begin{document}
 
-\title{I/Q imbalance predistortion schemes for OFDM systems}
+\title{I/Q Imbalance Pre‑Compensation for OFDM Systems Using RF Feedback and BLSTM Predistortion}
 
 \author{Jihoon~Lee and Jin~Kwan~Kim% <-this % stops a space
 %\IEEEmembership{, Member,~IEEE}
@@ -122,7 +122,7 @@ where $\varepsilon$ and $\varphi$ are the gain and phase errors, respectively.
 
 \section{I/Q imbalance predistortion schemes}
 
-\subsection{RF signal based predistortion of I/Q imbalance}
+\subsection{RF signal-based predistortion of I/Q imbalance}
 
 \begin{figure}[!t]
 \centering
@@ -184,7 +184,7 @@ Unlike traditional LSTM, BLSTM processes the information in both the forward and
 When processing the data $x_t$ at the current time $t$, the model can simultaneously analyze the influence of past data $(x_{t-1},x_{t-2},...)$ and future data $(x_{t+1},x_{t+2},...)$ on the current data $x_t$ \cite{REF10, REF11, REF12}.
 
 At the input layer, the real and imaginary parts of the complex signal affected by I/Q imbalance are separately fed into the BLSTM model.
-These signals pass through both forward and backward directions of BLSTM, which learn time-dependent features.
+These signals pass through both forward and backward BLSTM layers, which learn time-dependent features.
 The forward and backward hidden states, denoted by $\overrightarrow{h}_t$ and $\overleftarrow{h}_t$, are expressed as
 
 \begin{equation}
@@ -205,7 +205,7 @@ h_t = [\overrightarrow{h}_t,\overleftarrow{h}_t].
 \end{equation}
 
 The BLSTM model is trained using pairs of signals with I/Q imbalance and their corresponding ideal signals.
-The loss function $L$ is defined as the Mean Squared Error (MSE)
+The loss function $L$ is defined as the Mean Squared Error (MSE) and can be expressed as
 
 \begin{equation}
 \label{eq11}
@@ -213,29 +213,24 @@ L = \frac{1}{N} \sum_{i=1}^{N}(|I_{i,ideal}-I_{i,comp}|^2+|Q_{i,ideal}-Q_{i,comp
 \end{equation}
 where $I_{i,ideal}$ and $Q_{i,ideal}$ are in-phase and quadrature part of the ideally predistorted signal, respectively.
 On the other hand, $I_{i,comp}$ and $Q_{i,comp}$ are in-phase and quadrature part of the predistorted signal obtained through training, respectively.
-Finally, the model is trained using the training dataset and the defined loss function. 
+Finally, the model is trained using the training dataset, which consists of OFDM symbols with I/Q imbalance, and the defined loss function based on the MSE. 
 Through the optimization process, the model learns to effectively compensate for I/Q imbalance by minimizing the defined loss between the ideal and the compensated signals.
 
 For I/Q imbalance predistortion, the use of BLSTM algorithm offers several advantages.
 It can effectively compensate for non-linear I/Q imbalance, which is challenging for conventional linear compensation algorithms.
 Moreover, BLSTM is capable of capturing the time-dependent changes in I/Q imbalance, making it suitable for dynamically changing environments.
 However, the BLSTM-based I/Q imbalance predistortion also presents certain limitations.
-It requires a large amount of training data to achieve reliable performance, and the training process can be computationally intensive and time-consuming.
+It requires a large amount of training set to achieve reliable performance, and the training process can be computationally intensive and time-consuming.
 In addition, the implementation may demand more computational resources compared to traditional compensation techniques. 
 
 In this paper, considering the system complexity and hardware limitations, the OFDM system is designed with an FFT size of 32.
 The proposed BLSTM model consists of an input layer, two BLSTM hidden layers, and an output layer.
-The first and second BLSTM hidden layers contain 70 and 90 units, respectively, optimized to balance model accuracy and computational complexity under real-time processing constraints.
+The first and second BLSTM hidden layers contain 70 and 90 units, respectively, chosen to balance model accuracy and computational complexity under real-time processing constraints.
 The first layer captures fundamental I/Q imbalance patterns across 32 subcarriers, while the second layer models non-linear interactions between subcarriers.
 This achieves near-optimal MSE performance while maintaining processing within one OFDM symbol duration.
 To train the BLSTM model, the Root Mean Square Propagation (RMSProp) optimizer was used.
 The batch size was set to 32, and training was conducted over 60 epochs.
 The training dataset consisted of a total of 3,200,000 OFDM symbols, which were split into training (2,560,000 symbols) and test (640,000 symbols) sets at a ratio of 4:1.
-The performance of the training model was evaluated using the MSE.
-On the test set, the model achieved an MSE of $1.2 \times 10^{-4}$.
-
-In particular, the model demonstrated stable predistortion performance even for I/Q imbalance parameters that were not included in the training data, validating its strong generalization capability.
-These experimental results confirm that the proposed BLSTM architecture is effective for I/Q imbalance predistortion and achieves the performance suitable for practical system implementation.
 
 \begin{figure}[!t]
 \centering
@@ -254,7 +249,13 @@ In this section, simulation results are presented.
 The OFDM signal is modulated by Quadrature Phase Shift Keying (QPSK), and the number of subcarriers is set to 32. 
 For BLSTM training, the input and target data are set to signals with I/Q imbalance and the corresponding ideal signals, respectively. 
 The BLSTM training is performed independently for the I and Q components. 
-The I/Q imbalance is modeled by assuming a gain error uniformly distributed in the range of $0.3 \sim 0.6$ and a phase error uniformly distributed in the range of $5 \,^{\circ} \sim 8 \,^{\circ}$.
+The I/Q imbalance is modeled by assuming a gain error uniformly distributed in the range of $0.3\sim0.6$ and a phase error uniformly distributed in the range of $5 \,^{\circ}\sim8 \,^{\circ}$.
+For comparison, the RF signal-based predistortion scheme is evaluated under ideal conditions, where the effect of internal feedback loop errors is not taken into account.
+
+The performance of the training model was evaluated using the MSE.
+On the test set, the proposed BLSTM-based predistortion model achieved an MSE of $1.2 \times 10^{-4}$, demonstrating stable compensation performance under the considered I/Q imbalance conditions.
+In particular, the model demonstrated stable predistortion performance even for I/Q imbalance parameters that were not included in the training set, validating its strong generalization capability.
+These experimental results confirm that the proposed BLSTM architecture is effective for I/Q imbalance predistortion and achieves the performance suitable for practical system implementation.
 
 \subsection{Signal constellation under I/Q imbalance}
 
@@ -273,10 +274,11 @@ The I/Q imbalance is modeled by assuming a gain error uniformly distributed in t
 \end{figure}
 
 Fig. \ref{FIG5} shows the signal constellation in an AWGN channel with I/Q imbalance at an $E_b/N_0$ of 15 dB.
-As shown in Fig. \ref{FIG5}, the constellation is both dispersed and rotated when both gain 
-and phase imbalances are present.
-Compared to other RF impairments such as phase noise and non-linear amplification, I/Q imbalance is typically modeled using discrete amplitude and phase error parameters.
-This imbalance not only causes rotation of the constellation but also leads to the formation of multiple distinct clusters.
+As shown in Fig. \ref{FIG5}, the constellation is both dispersed and rotated when both gain and phase imbalances are present.
+This is because I/Q imbalance is typically modeled using discrete amplitude and phase error parameters, unlike other RF impairments such as phase noise and non-linear amplification.
+Consequently, this imbalance not only causes rotation of the constellation but also leads to the formation of multiple distinct clusters.
+%Compared to other RF impairments such as phase noise and non-linear amplification, I/Q imbalance is typically modeled using discrete amplitude and phase error parameters.
+
 
 Fig. \ref{FIG6} shows the signal constellation after I/Q imbalance compensation using the proposed BLSTM-based predistortion under the same conditions as Fig. \ref{FIG5}.
 From the results in Figs. \ref{FIG5} and \ref{FIG6}, it can be observed that the constellation cloud is significantly reduced after the compensation of I/Q imbalance using BLSTM-based predistortion.
@@ -286,32 +288,31 @@ From the results in Figs. \ref{FIG5} and \ref{FIG6}, it can be observed that the
 
 \begin{figure}[!t]
 \centering
-\includegraphics[width=8.6cm]{FIG10.jpg}
+\includegraphics[width=8.6cm]{FIG16.jpg}
 \caption{BER performance with and without I/Q imbalance predistortion in Rician fading channel}
 \label{FIG10}
 \end{figure}
 
 Fig. \ref{FIG10} shows the BER performance of two proposed predistortion schemes in an Rician channel with K factors of 0 and 4.
 For comparison, the results for the uncompensated case and the ideal case (no I/Q imbalance) are also plotted.
-The BLSTM based predistortion model was trained on signal with I/Q imbalance parameters of $\varepsilon=0.3 \sim 0.6$ and $\varphi=5 \sim 8 \,^{\circ}$.
 For the BER of $10^{-2}$, the RF signal-based and BLSTM-based predistortion schemes achieve approximately 6.0 dB and 5.5 dB performance improvements, respectively, compared to the uncompensated case under a Rician fading channel with a K factor of 0.
-For the BER of $10^{-5}$, the RF signal-based and BLSTM-based predistortion schemes achieve approximately 5.0 dB and 4.2 dB performance improvements, respectively, compared to the uncompensated case under a Rician fading channel with a K factor of 4.
+For the BER of $10^{-5}$, the RF signal-based and BLSTM-based predistortion schemes achieve approximately 5.0 dB and 4.5 dB performance improvements, respectively, compared to the uncompensated case under a Rician fading channel with a K factor of 4.
 
 As shown in Fig. \ref{FIG10}, the RF signal-based scheme shows near-ideal performance.
-The BLSTM-based scheme exhibits about 0.5 dB performance gap because the RF scheme directly measures errors in real time, while BLSTM relies on training data covering limited ranges.
-Moreover, the presence of residual MSE error $1.2 \times 10^{-4}$ and the computational complexity constraints that limit the model capacity result in the 0.5 dB performance gap compared to the RF signal-based scheme.
-However, the performance of the BLSTM-based predistortion scheme could be further improved by using more refined training data and the application of optimal layers and parameters.
+The BLSTM-based scheme exhibits about 0.5 dB performance gap compared to the RF signal-based scheme because the RF scheme directly measures errors in real time, while BLSTM relies on the training set covering limited ranges.
+Moreover, the presence of residual MSE error $1.2 \times 10^{-4}$ and the computational complexity constraints that limit the model capacity result in the 0.5 dB performance gap.
+However, the performance of the BLSTM-based predistortion scheme could be further improved by using more refined training set and the application of optimal layers and parameters.
 
 
 \section{Conclusion}
 This paper proposed two novel predistortion schemes for I/Q imbalance mitigation in OFDM systems.
-These two predistortion schemes overcome the limitations of conventional techniques that require additional pilot signals and employ post-compensation with larger residual errors, providing an effective solution for mitigating I/Q imbalance exhibiting non-linear characteristics.
+These two predistortion schemes overcome the limitations of conventional techniques that require additional pilot signals and employ post-compensation with relatively large residual errors, providing an effective solution for mitigating I/Q imbalance exhibiting non-linear characteristics.
 
 The performance of the proposed predistortion schemes is evaluated by simulation.
 The simulation results show that the RF signal-based predistortion scheme achieves performance nearly identical to the ideal case without I/Q imbalance, whereas the BLSTM-based predistortion scheme shows a performance degradation of about 0.5 dB.
-This degradation is mainly due to the inherent characteristics of the BLSTM approach, including the need for sufficient training data and the considerable time required for initial 
+This degradation is mainly due to the inherent characteristics of the BLSTM approach, including the need for sufficient training set and the considerable time required for initial 
 training.
-With further improvements in training strategies and model capacity, the BLSTM-based predistortion scheme has the potential to reach performance comparable to that of the RF signal based predistortion scheme.
+With further improvements in training strategies and model capacity, the BLSTM-based predistortion scheme has the potential to reach performance comparable to that of the RF signal-based predistortion scheme.
 
 %\section*{Acknowledgments}
 %This should be a simple paragraph before the References to thank those %individuals and institutions who have supported your work on this article.
