@@ -1,0 +1,460 @@
+\documentclass[lettersize,journal]{IEEEtran}
+\usepackage{amsmath,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats}
+\usepackage{url}
+\usepackage{verbatim}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{float}
+
+\usepackage{xcolor}
+\usepackage{soul}
+
+% --- CL float stabilization (minimal) ---
+\setlength{\textfloatsep}{5pt}
+\setlength{\floatsep}{5pt}
+\setlength{\intextsep}{5pt}
+
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
+% updated with editorial comments 8/9/2021
+
+\begin{document}
+
+\title{\huge I/Q Imbalance Pre‑Compensation for OFDM Systems Using RF Feedback and BLSTM Predistortion}
+
+\author{Jihoon~Lee and Jin~Kwan~Kim% <-this % stops a space
+%\IEEEmembership{, Member,~IEEE}
+
+\thanks{
+J. Lee is with Satellite Communication Research Division, Electronics and Telecommunications Research Institute (ETRI), Daejeon 34129, Republic of Korea (e-mail: jihoonlee0104@etri.re.kr).
+
+J. K. Kim (corresponding author) is an independent researcher, Taean, Chungcheongnam-do 32164, Republic of Korea (e-mail: tull00@hanyang.ac.kr).
+}
+
+%This work was supported by Institute for Information \& communications Technology Planning \& Evaluation (IITP) grant funded by the Korea government (KNPA) (No.2019-0-01291, LTE-based accurate positioning technique for emergency rescue).
+%This work was in part supported by the research fund of Hanyang University.}
+}
+
+% The paper headers
+%\markboth{Journal of \LaTeX\ Class Files,~Vol.~14, No.~8, August~2021}%
+%{Shell \MakeLowercase{\textit{et al.}}: A Sample Article Using IEEEtran.cls for %IEEE Journals}
+
+%\IEEEpubid{0000--0000/00\$00.00~\copyright~2021 IEEE}
+% Remember, if you use this you must call \IEEEpubidadjcol in the second
+% column for its text to clear the IEEEpubid mark.
+
+\maketitle
+
+\begin{abstract}
+In this paper, we propose two novel predistortion schemes to mitigate I/Q imbalance in Orthogonal Frequency Division Multiplexing (OFDM) communication systems: RF feedback-based and deep learning-based schemes.
+With the RF feedback-based scheme, gain and phase errors are estimated in real time using feedback from the RF signal.
+With the deep learning-based scheme, I/Q imbalance predistortion is performed using Bidirectional Long Short-Term Memory (BLSTM). The simulation results show that the proposed schemes reduce the Bit Error Rate (BER) in OFDM systems.
+\end{abstract}
+
+\begin{IEEEkeywords}
+I/Q imbalance, predistortion, deep learning, OFDM
+\end{IEEEkeywords}
+
+\section{Introduction}
+\IEEEPARstart{W}{ith} the evolution from 5G New Radio (NR) to the emerging sixth generation (6G) wireless systems, there is an increasing demand for higher data rates, lower latency, and massive connectivity.
+Both NR and emerging 6G systems adopt Orthogonal Frequency Division Multiplexing (OFDM) waveforms per recent 3GPP standards \cite{REF1, RP-25xxxx, RP-252912}.
+
+OFDM offers several advantages, including high spectral efficiency and strong robustness against multi-path fading and Doppler effects \cite{Prasad}.
+OFDM enables efficient FFT-based signal processing, does not require complex equalizers, and is robust to various channel impairments. 
+Therefore, OFDM remains widely adopted in modern communication systems.
+However, OFDM systems are highly sensitive to impairments such as frequency offset, high 
+Peak-to-Average Power Ratio (PAPR), Direct Current (DC) offset, I/Q imbalance, and phase noise \cite{REF4, REF5}.
+
+Modern wireless systems demand highly integrated, low-cost receivers, making Zero Intermediate Frequency (zero-IF) receivers widely adopted \cite{REF6}.
+However, while baseband processing occurs in the digital domain, up/down-conversion is performed in the analog domain, where I/Q imbalance is inevitable due to gain and phase 
+mismatches \cite{Razavi}.
+\hl{As wireless systems move toward higher frequency bands and wider bandwidths in 6G, the impact of I/Q imbalance becomes increasingly severe due to heightened sensitivity of analog components to gain and phase mismatches at millimeter-wave frequencies.}
+
+Several research efforts have addressed I/Q imbalance \cite{REF7, REF8, REF9, Mirror_Image}.
+\hl{However,} \cite{REF7, REF8, REF9} \hl{require additional pilot signals, reducing spectral efficiency, and focus on post-compensation at the receiver.
+Since post-compensation operates on the already-distorted received signal, it inherently results in larger residual errors, particularly under non-linear I/Q imbalance.
+Pre-compensation at the transmitter directly eliminates distortion before transmission, offering inherently better performance.}
+\hl{Reference} \cite{Mirror_Image} \hl{addresses transmitter-side I/Q imbalance by exploiting the mirror interference structure, where paired subcarriers are used to pre-cancel the distortion at the transmitter.
+However, this method assumes that the I/Q imbalance parameters are perfectly known a 
+priori, which is difficult to guarantee in practice. 
+When the compensation parameters deviate from the true values, the mirror interference is incompletely canceled and manifests as residual self-interference, causing severe performance degradation with increasing parameter mismatch.
+
+The main contributions of this paper are summarized as follows:}
+
+\begin{enumerate}
+    \item \hl{We propose an RF feedback-based predistortion scheme that estimates I/Q imbalance parameters in real time using internal RF feedback, without requiring pilot signals or a priori parameter knowledge.}
+
+    \item \hl{We propose a BLSTM-based predistortion scheme that learns the compensation mapping directly from training data, without requiring pilot signals or internal feedback.
+    Unlike conventional linear methods, it can handle non-linear I/Q imbalance characteristics.}
+\end{enumerate}
+
+The simulation results demonstrate that the proposed predistortion schemes improve the Bit Error Rate (BER) performance of the OFDM system under I/Q imbalance conditions.
+
+\section{System model}
+
+\subsection{OFDM System}
+In an OFDM system, a high-rate data stream is divided into multiple low-rate data streams.
+The time-domain OFDM signal $x(t)$ is \cite{Prasad}
+
+\begin{equation}
+\label{eq1}
+x(t) = \frac{1}{N}\sum_{n=0}^{N-1} X_{n} e^{j2\pi n\Delta ft}, \quad 0 \leq t < T
+\end{equation}
+where $N$ denotes the number of subcarriers, $X_n$ represents the data symbol on the $n$th subcarrier, $\Delta f =1/T$ is the subcarrier spacing and $T$ is OFDM symbol duration.
+In (\ref{eq1}), the time-domain OFDM signals $x(t)$ can be expressed as a sum of in-phase signal $I(t)$ and quadrature signal $Q(t)$ $(x(t) = I(t) + jQ(t))$.
+
+\subsection{I/Q Imbalance}
+In the up-conversion process, in-phase and quadrature signals are mapped onto cosine and sine waves of Local Oscillator (LO), respectively.
+In ideal up-conversion, the RF signal $s(t)$ is
+
+\begin{equation}
+\label{eq2}
+s(t) = I(t) \cdot cos(\omega_c t) + Q(t) \cdot sin(\omega_c t), 
+\end{equation}
+where $\omega_c$ is the carrier frequency of the RF signal.
+
+%\begin{figure}[!t]
+%\centering
+%\includegraphics[width=0.88\linewidth]{local_oscillator}
+%\caption{I/Q imbalance of the local oscillator}
+%\label{lo}
+%\end{figure}
+
+%Fig. \ref{lo} shows the I/Q imbalance of the LO.
+The signal with I/Q imbalance $\hat s(t)$ can be expressed as \cite{Razavi}
+
+\begin{equation}
+\label{eq3}
+\begin{split}
+\hat s(t) 
+&= I(t) \left(1+\frac{\varepsilon}{2}\right) cos \left(\omega_c t + \frac{\varphi}{2}\right) \\
+&+ Q(t) \left(1-\frac{\varepsilon}{2}\right) sin\left(\omega_c t - \frac{\varphi}{2}\right), 
+\end{split}
+\end{equation}
+where $\varepsilon$ and $\varphi$ are the gain and phase errors \hl{of the transmitter LO, respectively.
+This model assumes a frequency-independent (flat) I/Q imbalance, which is commonly used for narrowband OFDM systems.
+In this model, $\varepsilon$ represents the amplitude mismatch between the I and Q branches, while $\varphi$ denotes the phase deviation from the ideal $90 ^ {\circ}$ phase difference between the LO signals.
+While $\varepsilon$ and $\varphi$ are modeled as static parameters in the analytical derivation, in practice these parameters may exhibit non-linear characteristics and practical parameter variations due to temperature variations, component aging, and signal-dependent effects.
+In this study, $\varepsilon$ and $\varphi$ are used to model only the transmitter-side I/Q imbalance.}
+
+\section{I/Q imbalance predistortion schemes}
+
+\subsection{RF feedback-based predistortion of I/Q imbalance}
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.88\textwidth]{Predistortor}
+\caption{\hl{Block diagram of the proposed transmitter with RF feedback-based I/Q imbalance predistorter.}}
+\label{transmit}
+\end{figure*}
+
+Fig. \ref{transmit} \hl{shows the block diagram of the proposed transmitter with an I/Q imbalance predistorter based on the RF signal.
+For clarity, the wireless channel and receiver are not shown, because the proposed scheme operates entirely at the transmitter side.
+The internal feedback path samples the Power Amplifier (PA) output and performs down-conversion using the same LO employed for up-conversion within the same transmitter hardware.
+Consequently, there is no LO mismatch between the up- and down-conversion paths.
+This differs fundamentally from receiver-side compensation schemes} \cite{REF7, REF8, REF9}, \hl{which require synchronization between separate transmitter and receiver LOs.}
+
+The down-conversion signal $\tilde x(t)$ can be expressed as the sum of in-phase signal $\tilde I(t)$ and quadrature $\tilde Q(t)$ $(\tilde x(t) = \tilde I(t) + j \tilde Q(t))$.
+Then, $\tilde I(t)$ and $\tilde Q(t)$ can be expressed as
+
+\begin{equation}
+\label{eq4}
+\begin{split}
+&\tilde I(t) 
+= \int_{0}^{t} \hat s(\tau) \left(1+\frac{\varepsilon}{2}\right) cos \left(\omega_c \tau + \frac{\varphi}{2}\right)+n(\tau)d\tau \\
+&= I(t) \left(1+\frac{\varepsilon}{2}\right)^2 - Q(t) \left(1-\frac{\varepsilon^2}{4}\right) sin \varphi + n(t),
+\end{split}
+\end{equation}
+
+\begin{equation}
+\label{eq5}
+\begin{split}
+&\tilde Q(t) 
+= \int_{0}^{t} \hat s(\tau) \left(1-\frac{\varepsilon}{2}\right) sin \left(\omega_c \tau - \frac{\varphi}{2}\right) + n(\tau)d\tau \\
+&= Q(t) \left(1-\frac{\varepsilon}{2}\right)^2 - I(t) \left(1-\frac{\varepsilon^2}{4}\right) sin \varphi + n(t),
+\end{split}
+\end{equation}
+where $n(t)$ represent internal thermal noise.
+
+\hl{To simplify the analytical derivation, we assume $\varepsilon^2 \ll 1$, so that} \eqref{eq4} and \eqref{eq5} \hl{can be approximated by} \eqref{eq6} and \eqref{eq7}.
+
+\begin{equation}
+    \label{eq6}
+    \tilde I(t) \approx I(t) + \varepsilon I(t) - Q(t) sin \varphi
+\end{equation}
+
+\begin{equation}
+    \label{eq7}
+    \tilde Q(t) \approx Q(t) - \varepsilon Q(t) - I(t) sin \varphi
+\end{equation}
+
+\hl{While this approximation is strictly valid for small $\varepsilon$, the proposed estimation method is evaluated over a broader practical range ($\varepsilon = 0.3 \sim 0.6$) in Section} \ref{simulation}, \hl{where the approximation error remains sufficiently small for practical estimation purposes, as validated by the simulation results in Section} \ref{simulation}.
+
+\hl{Multiply both sides of} \eqref{eq6} \hl{by $I$ and that of} \eqref{eq7} \hl{by $Q$ as}
+
+\begin{equation}
+    \label{eq8}
+    \tilde I(t)I(t) \approx I^2(t) + \varepsilon I^2(t) - I(t)Q(t) sin \varphi
+\end{equation}
+
+\begin{equation}
+    \label{eq9}
+    \tilde Q(t)Q(t) \approx Q^2(t) - \varepsilon Q^2(t) - I(t)Q(t) sin \varphi
+\end{equation}
+
+\hl{Subtracting} \eqref{eq9} \hl{from} \eqref{eq8} \hl{yields:}
+
+\begin{equation}
+\label{eq10}
+\begin{split}
+&\tilde I(t)I(t) - \tilde Q(t)Q(t) \\
+&\approx I^2(t) - Q^2(t) + \varepsilon \left(I^2(t) + Q^2(t) \right)
+\end{split}
+\end{equation}
+
+\hl{Then, the gain error $\varepsilon_T$ can be estimated as}
+
+\begin{equation}
+\label{eq11}
+\varepsilon_T =
+\frac{I(t) \tilde I(t) - Q(t) \tilde Q(t) - (I^2(t) - Q^2(t))}{I^2(t) + Q^2(t)},
+\end{equation}
+
+\hl{Similarly, multiply both sides of} \eqref{eq6} \hl{by $Q$ and that of} \eqref{eq7} \hl{by $I$ as}
+
+\begin{equation}
+    \label{eq12}
+    \tilde I(t)Q(t) \approx I(t)Q(t) + \varepsilon I(t)Q(t) - Q^2(t) sin \varphi
+\end{equation}
+
+\begin{equation}
+    \label{eq13}
+    \tilde Q(t)I(t) \approx Q(t)I(t) - \varepsilon Q(t)I(t) - I^2(t) sin \varphi
+\end{equation}
+
+\hl{Adding} \eqref{eq12} and \eqref{eq13} \hl{yields:}
+
+\begin{equation}
+\label{eq14}
+\begin{split}
+&\tilde I(t)Q(t) + I(t)\tilde Q(t) \\
+&\approx 2I(t)Q(t) - \left(I^2(t) + Q^2(t) \right) sin \varphi
+\end{split}
+\end{equation}
+
+\hl{Then, the phase error $\varphi_T$ can be estimated as}
+
+\begin{equation}
+\label{eq15}
+\varphi_T = \sin^{-1} \left( \frac{2I(t)Q(t) - (\tilde I(t)Q(t) + I(t) \tilde Q(t))}{I^2(t) + Q^2(t)} \right).
+\end{equation}
+
+\subsection{Deep learning-based predistortion of I/Q imbalance}
+
+Under ideal conditions, the RF feedback-based scheme achieves near-ideal BER performance.
+However, the performance degradation of predistortion can be observed in environments with noise in the internal circuitry.
+This performance degradation is considered to result from the process of converting the RF signal through the DAC and the subsequent internal feedback loop involved in the RF feedback-based predistortion scheme.
+In this subsection, the deep learning-based predistortion of I/Q imbalance is proposed, which does not involve the internal feedback or DAC processes.
+
+In this paper, we employ BLSTM as a deep learning-based approach for I/Q imbalance predistortion. Unlike traditional LSTM, BLSTM processes information bidirectionally, utilizing both past and future context \cite{REF10, REF11, REF12}.
+
+At the input layer, the real and imaginary parts of the complex signal affected by I/Q imbalance are separately fed into the BLSTM model.
+These signals pass through both forward and backward BLSTM layers, which learn time-dependent features.
+The forward and backward hidden states, denoted by $\overrightarrow{h}_t$ and $\overleftarrow{h}_t$, are expressed as
+
+\begin{equation}
+\label{eq_lstm_for}
+\overrightarrow{h}_t = LSTM_{forward}(x_t,\overrightarrow{h}_{t-1}),
+\end{equation}
+
+\begin{equation}
+\label{eq_lstm_back}
+\overleftarrow{h}_t = LSTM_{backward}(x_t,\overleftarrow{h}_{t+1}).
+\end{equation}
+
+Then, the combined hidden state $h_t$, obtained by combining the forward and backward hidden states, can be expressed as
+
+\begin{equation}
+\label{eq_comb_ht}
+h_t = [\overrightarrow{h}_t,\overleftarrow{h}_t].
+\end{equation}
+
+The BLSTM model is trained using pairs of signals with I/Q imbalance and their corresponding ideal signals.
+The loss function $L$ is defined as the Mean Squared Error (MSE) and can be expressed as
+
+\begin{equation}
+\label{eq_loss_func}
+L = \frac{1}{N} \sum_{i=1}^{N}(|I_{i,ideal}-I_{i,comp}|^2+|Q_{i,ideal}-Q_{i,comp}|^2),
+\end{equation}
+where $I_{i,ideal}$ and $Q_{i,ideal}$ are in-phase and quadrature part of the ideally predistorted signal, respectively.
+On the other hand, $I_{i,comp}$ and $Q_{i,comp}$ are in-phase and quadrature part of the predistorted signal obtained through training, respectively.
+Finally, the model is trained using the training dataset, which consists of OFDM symbols with I/Q imbalance, and the defined loss function based on the MSE. 
+Through the optimization process, the model learns to effectively compensate for I/Q imbalance by minimizing the defined loss between the ideal and the compensated signals.
+
+For I/Q imbalance predistortion, the use of BLSTM algorithm offers several advantages.
+It can effectively compensate for I/Q imbalance exhibiting non-linear characteristics, which is challenging for conventional linear compensation algorithms.
+Moreover, \hl{BLSTM is capable of learning sequential signal characteristics associated with I/Q imbalance,} making it suitable for dynamically changing environments.
+However, the BLSTM-based I/Q imbalance predistortion also presents certain limitations.
+It \hl{requires a large training dataset} to achieve reliable performance, and the training process can be computationally intensive and time-consuming.
+In addition, the implementation may demand more computational resources compared to traditional compensation techniques. 
+
+In this paper, considering the system complexity and hardware limitations, the OFDM system is designed with an FFT size of 32.
+The proposed BLSTM model consists of an input layer, two BLSTM hidden layers, and an output layer.
+The first and second BLSTM hidden layers contain 70 and 90 units, respectively, chosen to balance model accuracy and computational complexity under real-time processing constraints.
+\hl{The first layer is intended to capture fundamental I/Q imbalance patterns across 32 subcarriers, while the second layer is intended to model nonlinear interactions between subcarriers.
+This achieves stable MSE performance} while maintaining \hl{computational complexity suitable for practical OFDM processing.}
+To train the BLSTM model, the Root Mean Square Propagation (RMSProp) optimizer was used.
+The batch size was set to 32, and training was conducted over 60 epochs.
+The training dataset consisted of a total of 3,200,000 OFDM symbols, which were split into training (2,560,000 symbols) and test (640,000 symbols) sets at a ratio of 4:1.
+
+\begin{figure}[!t]
+\centering
+\includegraphics[width=0.88\linewidth]{transmit_blstm}
+\caption{Transmitter structure with I/Q imbalance predistorter by BLSTM}
+\label{transmit_blstm}
+\end{figure}
+
+Fig. \ref{transmit_blstm} \hl{shows the OFDM transmitter structure incorporating the proposed BLSTM-based predistorter for I/Q imbalance compensation.}
+In Fig. \ref{transmit_blstm}, the BLSTM is applied after the Parallel-to-Serial (P/S) conversion. 
+During the BLSTM processing, the OFDM symbols are predistorted to mitigate the I/Q imbalance and then up-converted to the RF signal.
+
+
+\section{Simulation Results} \label{simulation}
+
+In this section, simulation results are presented. 
+The OFDM signal is modulated by Quadrature Phase Shift Keying (QPSK), and the number of subcarriers is set to 32. 
+For BLSTM training, the input and target data are set to signals with I/Q imbalance and the corresponding ideal signals, respectively. 
+The BLSTM training is performed independently for the I and Q components. 
+The I/Q imbalance is modeled by assuming a gain error uniformly distributed in the range of $0.3\sim0.6$ and a phase error uniformly distributed in the range of $5 \,^{\circ}\sim8 \,^{\circ}$.
+
+The performance of the training model was evaluated using the MSE. 
+On the test set, the proposed BLSTM-based predistortion model achieved an MSE of $1.2 \times 10^{-4}$, demonstrating stable compensation performance under the considered I/Q imbalance conditions.
+In particular, the model demonstrated stable predistortion performance for I/Q imbalance parameters beyond those explicitly seen during training, indicating its generalization capability.
+
+
+\subsection{Signal constellation under I/Q imbalance}
+
+\begin{figure}[!t]
+\centering
+\subfloat[With IQ imbalance]{\label{const_iq_imbal}
+    \includegraphics[width=0.8\linewidth]{const_iq_imbal}}
+\vfill
+\subfloat[After BLSTM predistortion]{\label{const_blstm}
+    \includegraphics[width=0.8\linewidth]{const_blstm}}
+\caption{Signal constellations in AWGN at $E_b/N_0 = 15$ dB.}
+\label{fig:const}
+\end{figure}
+
+Fig. \ref{fig:const} shows signal constellations in AWGN at $E_b/N_0 = 15$ dB. 
+In Fig.~\ref{fig:const}\subref{const_iq_imbal}, I/Q imbalance causes constellation dispersion, rotation, and multiple distinct clusters. 
+This characteristic pattern arises because I/Q imbalance is modeled using discrete amplitude and phase error parameters, unlike random RF impairments 
+such as phase noise. 
+In Fig.~\ref{fig:const}\subref{const_blstm}, after BLSTM predistortion, the constellation cloud is significantly reduced, demonstrating 
+effective compensation.
+
+\subsection{Error Vector Magnitude (EVM) performance}
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=0.88\linewidth]{evm}
+    \caption{EVM performance comparison under I/Q imbalance in an AWGN channel.}
+    \label{evm}
+\end{figure}
+
+\hl{Fig.} \ref{evm} \hl{shows the Error Vector Magnitude (EVM) performance of the two proposed predistortion schemes in an AWGN channel.
+For comparison, the results for the uncompensated case and the ideal case (no I/Q imbalance) are also plotted.
+
+At an EVM of 30\%, the RF feedback-based scheme achieves approximately 0.5 dB improvement over the uncompensated case, with performance comparable to the conventional mirror image method.
+At the same EVM of 30\%, the BLSTM-based method achieves approximately 2.5 dB improvement over the uncompensated case, and about 2.0 dB improvement over both the RF feedback-based scheme and the conventional mirror image method.}
+
+\subsection{BER performance}
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=0.88\linewidth]{ber}
+    \caption{BER performance with and without I/Q imbalance predistortion over a Rician fading channel.}
+    \label{ber}
+\end{figure}
+
+Fig. \ref{ber} shows the BER performance of \hl{the} two proposed predistortion schemes in a Rician channel with \textit{K} factors of 0 and 4.
+\hl{For the RF feedback-based scheme, the internal thermal noise in the transmitter feedback path is modeled with an equivalent $E_b/N_0$ of 15 dB to account for practical hardware imperfections.}
+For comparison, the results for the uncompensated case and the ideal case (no I/Q imbalance) are also plotted.
+\hl{For $K = 0$ at BER of $10^{-2}$, and $K = 4$ at BER of $10^{-5}$, the RF feedback-based and BLSTM-based schemes achieve approximately 5 dB and 5.8 dB improvements over the uncompensated case, respectively.
+While the RF feedback-based scheme shows comparable performance to the conventional mirror image method} \cite{Mirror_Image}, \hl{the BLSTM-based scheme further outperforms} \cite{Mirror_Image} \hl{by 0.8 dB under both channel conditions.}
+
+These experimental results confirm that the proposed BLSTM architecture is effective for I/Q imbalance predistortion and achieves performance suitable for practical system implementation under the considered conditions.
+
+
+\section{Conclusion}
+
+This paper proposed two novel predistortion schemes for I/Q imbalance mitigation in OFDM systems.
+\hl{These two predistortion schemes overcome the pilot-signal and parameter-estimation requirements of conventional approaches.
+Unlike} \cite{REF7, REF8, REF9}, \hl{they require no pilot signals, and unlike} \cite{Mirror_Image}, \hl{they require no a priori knowledge of I/Q imbalance parameters, eliminating the need for explicit parameter estimation in practice.}
+
+\hl{Simulation results show that the RF feedback-based predistortion scheme achieves performance nearly identical to the ideal case without I/Q imbalance}, whereas the BLSTM-based predistortion scheme shows a performance degradation of about 0.5 dB.
+The remaining 0.5 dB gap mainly stems from limited training dataset coverage and model capacity constraints.
+With further improvements in training strategies and model design, the performance gap between the proposed BLSTM-based predistortion scheme and the RF feedback-based scheme may be further reduced.
+
+%\section*{Acknowledgments}
+%This should be a simple paragraph before the References to thank those %individuals and institutions who have supported your work on this article.
+
+% \textit{et al.}
+
+\begin{thebibliography}{1}
+\bibliographystyle{IEEEtran}
+
+\bibitem{REF1}
+3GPP TS38.211, {\it{3rd Generation Partnership Project: 5G; NR; Physical channels and modulation}}. ETSI, Sophia Antipolis, France, 2018.
+
+\bibitem{RP-25xxxx}
+3GPP TSG RAN meeting \#109, {\it{Status Report to TSG}}. Beijing, China, Sep. 2025.
+
+\bibitem{RP-252912}
+3GPP TSG RAN meeting \#109, {\it{Study on 6G Radio}}. Beijing, China, Sep. 2025.
+
+\bibitem{Prasad}
+R. Prasad, {\it{OFDM for wireless communications systems}}, Norwood, MA, USA: Artech House, 2004.
+
+\bibitem{REF4}
+S. Woo, D. Lee, K. Kim, Y. Hur, C. Lee, and J. Laskar, ``Combined effects of RF impairments in the future IEEE 802.11n WLAN systems,'' in \textit{Proc. IEEE VTC-SPRING}, Stockholm, Sweden, 2005, pp. 1346--1349.
+
+\bibitem{REF5}
+H. Ryu, Y. S. Li, and J. Park, ``Nonlinear analysis of the phase noise in the OFDM communication system,'' \textit{IEEE Trans. Consumer Electron.}, vol. 50, no. 1, pp. 54--63, Feb. 2004.
+
+\bibitem{REF6}
+A. A. Abidi, ``Direct-conversion radio transceivers for digital communications,'' \textit{IEEE Journal of Solid-State Circuits}, vol. 30, no. 12, pp. 1399--1410, Dec. 1995.
+
+\bibitem{Razavi}
+B. Razavi, {\it{RF Microelectronics}}, Upper Saddle River, NJ, USA: Prentice Hall, 1998.
+
+\bibitem{REF7}
+A. Schuchert, R. Hasholzner, and P. Antonie, ``A novel IQ imbalance compensation scheme for the reception of OFDM signals,'' \textit{IEEE Trans. Consumer Electron.}, vol. 47, no. 3, pp. 313--318, Aug. 2001.
+
+\bibitem{REF8}
+L. Anttila, M. Valkama, and M. Renfors, ``Blind Compensation of Frequency-Selective I/Q Imbalances in Quadrature Radio Receivers: Circularity-Based Approach,'' in \textit{Proc. IEEE ICASSP}, Honolulu, USA, 2007, pp. 245--248.
+
+\bibitem{REF9}
+A. Kiayani, L. Anttila, Y. Zou, and M. Valkama, ``Advanced Receiver Design for Mitigating Multiple RF Impairments in OFDM Systems: Algorithms and RF Measurements,'' \textit{Journal of Electron. and Computer Engineer.}, vol. 2012, no. 3, pp. 1--16, Jan. 2012.
+
+\bibitem{Mirror_Image}
+\hl{Y. Yuda, T. Kimura, S. Maki, and A. Nishio, ``Compensation of TX IQ imbalance in wideband OFDM systems,'' \textit{IEICE Commun. Express}, vol. 14, no. 8, pp. 301--304, Mar. 2025.}
+
+\bibitem{REF10}
+Y. Zhu, C. Gong, J. Luo, M. Jin, X. Jin, and Z. Xu, ``Indoor Non-Line of Sight Visible Light Communication with a Bi-LSTM Neural Network,'' in \textit{Proc. 2020 IEEE Intern. Conf. on Commun. Workshops (ICC Workshops)}, Dublin, Ireland, 2020, pp. 1--6.
+
+\bibitem{REF11}
+Md. A. I. Sunny, M. M. S. Maswood, and A. G. Alharbi, ``Deep learning-based stock price prediction using LSTM and bi-directional LSTM model,'' in \textit{Proc. 2020 2nd Novel Intelligent and Leading Emerging Sciences Conference (NILES)}, Giza, Egypt, 2020, pp. 87--92.
+
+\bibitem{REF12}
+Y. Imrana, Y. Xiang, L. Ali, and Z. Abdul-Rauf, ``A bidirectional LSTM deep learning approach for intrusion detection,'' \textit{Expert Syst. Appl.}, vol. 185, no. 8, Dec. 2021.
+
+\end{thebibliography}
+
+\vfill
+
+\end{document} 
