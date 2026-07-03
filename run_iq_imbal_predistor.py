@@ -421,6 +421,24 @@ for i in range(len(SNR)):
     t_snr = 10 ** (SNR[i] / 10)
     theo_err[i] = (1 / 2) * erfc(np.sqrt(t_snr)) - (1 / 8) * (erfc(np.sqrt(t_snr))) ** 2
 
+# plt.figure(3)
+# plt.plot(rx_ps_comp.real[:, 0: 1000], rx_ps_comp.imag[:, 0: 1000], 'b.', label='Contallation')
+# plt.savefig('output1.png', bbox_inches='tight')
+#print(f"Simulated contellation: {rx_ps_r[:, 0: 1000]}\n")
+#print(f"BLSTM contellation: {blstm_rx_ps[:, 0: 1000]}\n")
+#with open("/content/drive/MyDrive/simul_const.csv", mode='w') as go1:
+#	fidw1 = csv.writer(go1, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+#	for idx in range(len(rx_ps_r)):
+#		fidw1.writerow(rx_ps_r[idx])
+#with open("/content/drive/MyDrive/blstm_const.csv", mode='w') as go2:
+#	fidw2 = csv.writer(go2, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+#	for idx in range(len(blstm_rx_ps)):
+#		fidw2.writerow(blstm_rx_ps[idx])
+#with open("/content/drive/MyDrive/pred_const.csv", mode='w') as go3:
+#	fidw3 = csv.writer(go3, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+#	for idx in range(len(pred_rx_ps)):
+#		fidw3.writerow(pred_rx_ps[idx])
+        
 plt.figure(4)
 plt.semilogy(SNR, org_ber[4], 'g', label='No IQ imbalance BER')
 if ch_mode == 0:
