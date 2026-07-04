@@ -16,6 +16,14 @@ def normalize_with_rms(I_data, Q_data):
         Q_data_normalized = Q_data
     return I_data_normalized, Q_data_normalized, rms_magnitude
 
+# 훈련과 동일하게 std 기반 정규화 함수로 통일
+def normalize_with_std(I_data, Q_data):
+    magnitude = np.sqrt(I_data**2 + Q_data**2)
+    std_magnitude = np.std(magnitude)
+    if std_magnitude > 0:
+        return I_data/std_magnitude, Q_data/std_magnitude, std_magnitude
+    return I_data, Q_data, std_magnitude
+    
 def denormalize_with_rms(I_data, Q_data, rms_magnitude):
     return I_data * rms_magnitude, Q_data * rms_magnitude
 	
@@ -264,7 +272,9 @@ for i in range(X):
     # --------------------------------------------------------
 
     # BLSTM Predistorter (기존 로직 유지)
-    blstm_I_norm, blstm_Q_norm, rms_mag = normalize_with_rms(org_I.reshape(1,-1), org_Q.reshape(1,-1))
+    #blstm_I_norm, blstm_Q_norm, rms_mag = normalize_with_rms(org_I.reshape(1,-1), org_Q.reshape(1,-1))
+    blstm_I_norm, blstm_Q_norm, _ = normalize_with_std(org_I.reshape(1,-1), org_Q.reshape(1,-1))
+
     model_corr_r = np.expand_dims(blstm_I_norm.reshape(-1, N), axis=-1)
     model_corr_i = np.expand_dims(blstm_Q_norm.reshape(-1, N), axis=-1)
     keras.backend.clear_session()
@@ -278,8 +288,13 @@ for i in range(X):
         
         blstm_I_r_norm = sig_in_Linear_dl_r.reshape(1, -1)
         blstm_Q_r_norm = sig_in_Linear_dl_i.reshape(1, -1)
-        blstm_I_r, blstm_Q_r = denormalize_with_rms(blstm_I_r_norm.flatten(), blstm_Q_r_norm.flatten(), rms_mag)
-        
+        #blstm_I_r, blstm_Q_r = denormalize_with_rms(blstm_I_r_norm.flatten(), blstm_Q_r_norm.flatten(), rms_mag)
+        # 네트워크 출력은 std(target)로 정규화된 스케일이므로,
+        # predistortion 목표 신호의 std로 되돌린다
+        target_std = np.std(np.sqrt(I_r_Comp.flatten()**2 + Q_r_Comp.flatten()**2))
+        blstm_I_r = blstm_I_r_norm.flatten() * target_std
+        blstm_Q_r = blstm_Q_r_norm.flatten() * target_std
+
         blstm_i = blstm_I_r.reshape(-1, X) * up_cos_r
         blstm_q = blstm_Q_r.reshape(-1, X) * up_sin_r
         blstm_iq_out[i * change_block: (i + 1) * change_block, :] = blstm_i.reshape(1, -1) + blstm_q.reshape(1, -1)
