@@ -156,7 +156,7 @@ def mirror_predistorter(sp, N, epsilon_c, phi_c_deg):
     phi_c_deg: 추정된 위상 오차 (도 단위)
     """
     # 사용자의 위상 모델(pi*C/360)에 맞춰 변환
-    theta = phi_c_deg * np.pi / 360
+    theta = -phi_c_deg * np.pi / 360
 
     # 논문의 계수 계산
     term1 = 0.5 * (np.exp(1j * theta) / (1 + epsilon_c) + np.exp(-1j * theta) / (1 - epsilon_c))
@@ -245,14 +245,14 @@ change_block = int(D / X)
 
 np.random.seed(seed=int(time.time()))
 
-up_C = 5
-up_upsilon = 0.3
+up_C = 1
+up_upsilon = 0.1
 down_C = 0
 down_upsilon = 0
 
 blstm = 0
 
-thermal_noise = 15
+thermal_noise = 5
 ch_mode = 2 # 0: AWGN, 1: Rayleigh, 2: Rician
 K = 5	    # Rician K factor (0 ~ K)
 
@@ -302,7 +302,7 @@ for i in range(X):
     snr_wp = 10 ** (thermal_noise / 10)
     sgma_pilot = np.sqrt(X * sigpwr_pilot / snr_wp / 2 / np.log2(M))
     n_pilot = sgma_pilot * np.random.randn(1, np.size(pilot_IQ_out))
-    pilot_IQ_out = pilot_IQ_out + n_pilot
+    #pilot_IQ_out = pilot_IQ_out + n_pilot
 
     rx_I_out = np.dot(pilot_IQ_out.reshape(-1, X), up_cos_r.T)
     rx_Q_out = np.dot(pilot_IQ_out.reshape(-1, X), up_sin_r.T)
@@ -314,7 +314,7 @@ for i in range(X):
     # ✅ 수정: FFT 제거, 시간 도메인 신호 사용
     est_epsilon, est_phi = IQ_est(ps.flatten(), rx_out.flatten())
     #                             ↑ IFFT 출력      ↑ 다운컨버전 출력 (FFT 전)
-    print(f"Estimated epsilon: {est_epsilon}, Estimated phi: {est_phi}\n")
+    print(f"Epsilon: {epsilon}, Estimated epsilon: {est_epsilon}, Phi: {phi}, Estimated phi: {est_phi}\n")
 
     # 기존 송신기 데이터
     sp = b.reshape(-1, N)
@@ -345,7 +345,8 @@ for i in range(X):
     pred_iq_out[i * change_block: (i + 1) * change_block, :] = pred_i_out + pred_q_out
 
     # --- [추가] 기존 논문 제안 기법: 주파수 영역 사전왜곡 처리 ---
-    sp_mirror = mirror_predistorter(sp, N, est_epsilon, est_phi) # Use est_epsilon, est_phi directly
+    # sp_mirror = mirror_predistorter(sp, N, est_epsilon / 2, est_phi) # Use est_epsilon, est_phi directly
+    sp_mirror = mirror_predistorter(sp, N, 0.02, 1) # Epsilon: 0.02, Phi: 1
     ifft_out_mirror = np.fft.ifft(sp_mirror)
     ps_mirror = ifft_out_mirror.reshape(-1, 1)
 
