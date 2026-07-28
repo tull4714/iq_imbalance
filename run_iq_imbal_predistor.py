@@ -124,17 +124,16 @@ down_upsilon = 0
 
 blstm = 1
 
-thermal_noise = 5
 ch_mode = 2   # 0: AWGN, 1: Rayleigh, 2: Rician
-K = 5
+K_list = [4, 8, 12, 16, 20]   # 테스트할 실제 Rician K factor
 
 SNR = np.arange(0, 20, 2)
-org_ber = np.zeros((K, len(SNR)))
-ber = np.zeros((K, len(SNR)))
-pred_ber = np.zeros((K, len(SNR)))
-mirror_ber = np.zeros((K, len(SNR)))
+org_ber = np.zeros((len(K_list), len(SNR)))
+ber = np.zeros((len(K_list), len(SNR)))
+pred_ber = np.zeros((len(K_list), len(SNR)))
+mirror_ber = np.zeros((len(K_list), len(SNR)))
 if blstm == 1:
-    blstm_ber = np.zeros((K, len(SNR)))
+    blstm_ber = np.zeros((len(K_list), len(SNR)))
 theo_err = np.zeros(len(SNR))
 
 org_IQ_out = np.zeros((1, D))
@@ -266,13 +265,8 @@ if blstm == 1:
     print(f"sigpwr_blstm : {sigpwr_blstm:.6f}")
     print(f"BLSTM/Pred power ratio: {sigpwr_blstm / sigpwr_pred:.4f} (1.0에 가까울수록 스케일 정합)")
 
-if ch_mode == 0 or ch_mode == 1:
-    K = 1
-for i_k in range(0, K):
-    if ch_mode == 0 or ch_mode == 1:
-        print("Channel mode: ", ch_mode)
-    else:
-        print("Rician K factor: ", i_k)
+for i_k in range(len(K_list)):
+    print("Channel mode: ", ch_mode)
     for m in range(len(SNR)):
         snr_wp = 10 ** (SNR[m] / 10)
 
@@ -312,16 +306,18 @@ for i_k in range(0, K):
                 h_blstm = (np.random.randn(blstm_iq_out.size) + 1j * np.random.randn(blstm_iq_out.size)) / np.sqrt(2)
                 blstm_rev = (h_blstm * blstm_iq_out + n_blstm) / h_blstm
         else:                 # Rician
-            k_0 = 4 * (i_k + 1)
+            # k_0 = 4 * (i_k + 1)
+            k_0 = K_list[i_k]
+            print("Rician K factor:", k_0)   # 실제 K가 출력됨
             frame = org_IQ_out.size
             h = np.sqrt(k_0 / (1 + k_0)) * np.ones((1, frame)) + \
                 np.sqrt(1 / (1 + k_0)) * ((np.random.randn(1, frame) + 1j * np.random.randn(1, frame)) / np.sqrt(2))
-            org_receive = h * org_IQ_out + n_org
-            receive_data = h * IQ_out_r + n
-            pred_rev = h * pred_iq_out + n_pred
-            mirror_rev = h * mirror_iq_out + n_mirror
+            org_receive  = (h * org_IQ_out  + n_org)  / h
+            receive_data = (h * IQ_out_r    + n)      / h
+            pred_rev     = (h * pred_iq_out + n_pred) / h
+            mirror_rev   = (h * mirror_iq_out + n_mirror) / h
             if blstm == 1:
-                blstm_rev = h * blstm_iq_out + n_blstm
+                blstm_rev = (h * blstm_iq_out + n_blstm) / h
 
         down_cos_r = cos_sampling(X, Fq, down_C, down_upsilon)
         down_sin_r = sin_sampling(X, Fq, down_C, down_upsilon)
@@ -368,20 +364,23 @@ for i_k in range(0, K):
         else:
             print(f"org:{org_ber[i_k, m]:.5f}, imb:{ber[i_k, m]:.5f}, "
                   f"pred:{pred_ber[i_k, m]:.5f}, mirror:{mirror_ber[i_k, m]:.5f}\n")
+                  
+    if ch_mode == 0 or ch_mode == 1:
+        break
 
 for i in range(len(SNR)):
     t_snr = 10 ** (SNR[i] / 10)
     theo_err[i] = (1 / 2) * erfc(np.sqrt(t_snr)) - (1 / 8) * (erfc(np.sqrt(t_snr))) ** 2
 
 plt.figure(4)
-plt.semilogy(SNR, org_ber[K-1], 'g', label='No IQ imbalance BER')
+plt.semilogy(SNR, org_ber[4], 'g', label='No IQ imbalance BER')
 if ch_mode == 0:
     plt.semilogy(SNR, theo_err, 'k--', label='Theoretical BER')
-plt.semilogy(SNR, ber[K-1], 'b', label='Simulated BER (Imbalance)')
-plt.semilogy(SNR, pred_ber[K-1], 'r', label='Time-Domain Predistortion')
+plt.semilogy(SNR, ber[4], 'b', label='Simulated BER (Imbalance)')
+plt.semilogy(SNR, pred_ber[4], 'r', label='Time-Domain Predistortion')
 if blstm == 1:
-    plt.semilogy(SNR, blstm_ber[K-1], 'm', label='BLSTM (conditioned)')
-plt.semilogy(SNR, mirror_ber[K-1], 'c-x', label='Conv Freq-Domain Pre-dist')
+    plt.semilogy(SNR, blstm_ber[4], 'm', label='BLSTM (conditioned)')
+plt.semilogy(SNR, mirror_ber[4], 'c-x', label='Conv Freq-Domain Pre-dist')
 plt.xlabel('SNR (dB)')
 plt.ylabel('BER')
 plt.axis([0, 20, 1e-5, 1])
