@@ -51,17 +51,22 @@ def IQ_est(pilot0, pilot1, power_threshold=1e-6):
     phi_T = np.rad2deg(np.mean(com_C))
     return 2 * eps_T, phi_T          # (1±eps/2) 컨벤션의 eps로 반환
 
-def cos_predistor(data, X, Fq, epsilon, phi):
-    a_Ir = 2 / (2 + epsilon) * data
-    m = np.arange(0, X)
-    S_IC = 1 / (np.cos((2 * Fq * np.pi * m) / X + np.pi * phi / 360))
-    return a_Ir * S_IC
+def iq_predistort(I, Q, epsilon, phi):
+    """기저대역 I/Q 사전왜곡 (M^-1 적용).
 
-def sin_predistor(data, X, Fq, epsilon, phi):
-    a_Qr = 2 / (2 - epsilon) * data
-    m = np.arange(0, X)
-    S_QC = 1 / (np.sin((2 * Fq * np.pi * m) / X - np.pi * phi / 360))
-    return a_Qr * S_QC
+    [I; Q] = M(eps, phi) [I_PD; Q_PD] 를 풀어 얻은 폐형해.
+    반송파 위상에 의존하지 않으므로 DAC 앞단에서 그대로 구현 가능.
+
+    I, Q    : 기저대역 성분 (같은 shape)
+    epsilon : 이득 오차 ((1 +- eps/2) 컨벤션)
+    phi     : 위상 오차 [degree]
+    """
+    h = np.deg2rad(phi) / 2.0          # varphi / 2
+    c, s = np.cos(h), np.sin(h)
+    cos_phi = np.cos(2.0 * h)          # cos(varphi), det M 의 공통 인자
+    I_pd = (c * I + s * Q) / ((1.0 + epsilon / 2.0) * cos_phi)
+    Q_pd = (s * I + c * Q) / ((1.0 - epsilon / 2.0) * cos_phi)
+    return I_pd, Q_pd
 
 def mirror_predistorter(sp, N, epsilon_c, phi_c_deg):
     theta = -phi_c_deg * np.pi / 360   # 이 시스템(Q를 +sin에 싣는 컨벤션)에 맞춘 부호
@@ -123,6 +128,10 @@ down_C = 0
 down_upsilon = 0
 
 blstm = 1
+# 새 predistortion 식에서 I_PD 가 Q 에도 의존하므로, 재학습 모델은
+# [I, Q, eps, phi] 4개 feature 를 받아야 한다. 기존 3-feature 모델을 그대로
+# 쓰려면 False 로 둔다 (교차항을 표현할 수 없어 오차 플로어가 남음).
+BLSTM_JOINT_INPUT = False
 
 ch_mode = 2   # 0: AWGN, 1: Rayleigh, 2: Rician
 K_list = [4, 8, 12, 16, 20]   # 테스트할 실제 Rician K factor
@@ -159,6 +168,10 @@ if blstm == 1:
         os.path.join(BASE_DIR, f'vlc_lstm_cond_{MODEL_EPOCH}_i.h5'), compile=False)
     print(f"[BLSTM] loaded cond model (epoch {MODEL_EPOCH}), "
           f"in_std={in_std:.6f}, tg_std={tg_std:.6f}")
+    if not BLSTM_JOINT_INPUT:
+        print("[BLSTM] 경고: 3-feature 모델입니다. 학습 타깃이 iq_predistort() 로 "
+              "재생성된 경우 [I, Q, eps, phi] 로 재학습 후 "
+              "BLSTM_JOINT_INPUT=True 로 바꾸십시오.")
 
 epsilon = up_upsilon
 phi = up_C
@@ -209,11 +222,11 @@ for i in range(X):
     IQ_out_r[i * change_block: (i + 1) * change_block, :] = \
         conv_I.reshape(1, -1) + conv_Q.reshape(1, -1)
 
-    # ── 시간영역 predistortion ──
-    I_r_Comp = cos_predistor(org_I, X, Fq, est_epsilon, est_phi)
-    Q_r_Comp = sin_predistor(org_Q, X, Fq, est_epsilon, est_phi)
+    # ── 기저대역 predistortion ──
+    # 기저대역 I_r, Q_r 에 M^-1 을 적용한 뒤 상향변환한다.
+    I_r_Comp, Q_r_Comp = iq_predistort(I_r, Q_r, est_epsilon, est_phi)
     pred_iq_out[i * change_block: (i + 1) * change_block, :] = \
-        (I_r_Comp * up_cos_r).reshape(1, -1) + (Q_r_Comp * up_sin_r).reshape(1, -1)
+        np.dot(I_r_Comp, up_cos_r).reshape(1, -1) + np.dot(Q_r_Comp, up_sin_r).reshape(1, -1)
 
     # ── 주파수영역(mirror) predistortion: 추정치 사용으로 복원 ──
     sp_mirror = mirror_predistorter(sp, N, 0.35 / 2, 3.5)
@@ -237,8 +250,13 @@ for i in range(X):
         ch_e = np.full_like(sig_r, eps_n)
         ch_p = np.full_like(sig_r, phi_n)
 
-        x_r = np.stack([sig_r, ch_e, ch_p], axis=-1).astype(np.float32)
-        x_i = np.stack([sig_i, ch_e, ch_p], axis=-1).astype(np.float32)
+        if BLSTM_JOINT_INPUT:
+            # I 채널과 Q 채널을 모두 입력 (새 predistortion 식과 정합)
+            x_r = np.stack([sig_r, sig_i, ch_e, ch_p], axis=-1).astype(np.float32)
+            x_i = np.stack([sig_r, sig_i, ch_e, ch_p], axis=-1).astype(np.float32)
+        else:
+            x_r = np.stack([sig_r, ch_e, ch_p], axis=-1).astype(np.float32)
+            x_i = np.stack([sig_i, ch_e, ch_p], axis=-1).astype(np.float32)
 
         out_r = recovery_dl_r.predict(x_r, batch_size=512, verbose=0)
         out_i = recovery_dl_i.predict(x_i, batch_size=512, verbose=0)
