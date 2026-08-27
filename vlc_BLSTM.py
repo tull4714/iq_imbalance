@@ -11,7 +11,13 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 
-BASE_DIR = '/content/drive/MyDrive'   # 데이터/모델 위치
+BASE_DIR = '/content/drive/MyDrive/IQ_imbalance_BLSTM/predistortion'   # 데이터/모델 위치
+
+# ── 논문 III-B 와 맞춘 하이퍼파라미터 ──
+UNITS_L1   = 70      # 첫 번째 BLSTM 은닉층 유닛 수
+UNITS_L2   = 90      # 두 번째 BLSTM 은닉층 유닛 수
+BATCH_SIZE = 32
+N_FEATURES = 4       # [I, Q, eps, phi]
 
 print("Num GPUs Available: ", len(tf.config.list_physical_devices('GPU')))
 gpus = tf.config.list_physical_devices('GPU')
@@ -62,14 +68,14 @@ N = 32
 meta = np.load(os.path.join(BASE_DIR, 'blstm_train_meta.npz'))
 eps_frames   = meta['eps_frames']
 phi_frames   = meta['phi_frames']
-frame_branch = int(meta['frame_branch'])
+frame_len    = int(meta['frame_len'])
 eps_mid, eps_half = float(meta['eps_mid']), float(meta['eps_half'])
 phi_mid, phi_half = float(meta['phi_mid']), float(meta['phi_half'])
-assert frame_branch % N == 0
-seq_per_frame = frame_branch // N
+assert frame_len % N == 0
+seq_per_frame = frame_len // N
 
 # ============================================================
-# 데이터 로드 및 시퀀스화
+# 데이터 로드 및 시퀀스화 (기저대역 I/Q)
 # ============================================================
 sig_in_I = convert_to_float(pd.read_csv(os.path.join(BASE_DIR, 'input_iq_I.csv'), header=None).to_numpy()).reshape(-1, N)
 sig_in_Q = convert_to_float(pd.read_csv(os.path.join(BASE_DIR, 'input_iq_Q.csv'), header=None).to_numpy()).reshape(-1, N)
@@ -79,7 +85,7 @@ tgt_Q    = convert_to_float(pd.read_csv(os.path.join(BASE_DIR, 'input_Q_r.csv'),
 num_seq = len(sig_in_I)
 assert len(tgt_I) == num_seq, "입력과 target의 시퀀스 수가 다릅니다!"
 split = int(0.8 * num_seq)
-print(f"total sequences: {num_seq}, train: {split}, test: {num_seq - split}")
+print(f"total sequences: {num_seq}, train: {split}, validation: {num_seq - split}")
 if split == 0:
     raise ValueError("훈련 시퀀스가 0개입니다. 데이터 파일을 확인하세요.")
 
@@ -92,7 +98,7 @@ ch_e = np.repeat(eps_seq[:, None], N, axis=1)   # (num_seq, N)
 ch_p = np.repeat(phi_seq[:, None], N, axis=1)
 
 # ============================================================
-# 정규화: train 통계 하나로 train/test 모두 정규화 (추론과 동일 규약)
+# 정규화: train 통계 하나로 train/validation 모두 정규화 (추론과 동일 규약)
 # ============================================================
 train_input_std  = np.std(np.sqrt(sig_in_I[:split]**2 + sig_in_Q[:split]**2))
 train_target_std = np.std(np.sqrt(tgt_I[:split]**2  + tgt_Q[:split]**2))
@@ -112,41 +118,46 @@ np.savez(os.path.join(BASE_DIR, 'blstm_norm_scale.npz'),
 print("saved: blstm_norm_scale.npz")
 
 # ============================================================
-# (N, 3) 입력 구성: [신호, eps 채널, phi 채널]
+# (N, 4) 입력 구성: [I, Q, eps 채널, phi 채널]
+#  I_PD 가 Q 에도 의존하므로 두 branch 를 모두 입력한다.
+#  두 네트워크는 같은 입력을 받고 서로 다른 성분을 출력한다.
 # ============================================================
-x_train_r = np.stack([sig_in_I[:split], ch_e[:split], ch_p[:split]], axis=-1).astype(np.float32)
-x_test_r  = np.stack([sig_in_I[split:], ch_e[split:], ch_p[split:]], axis=-1).astype(np.float32)
-x_train_i = np.stack([sig_in_Q[:split], ch_e[:split], ch_p[:split]], axis=-1).astype(np.float32)
-x_test_i  = np.stack([sig_in_Q[split:], ch_e[split:], ch_p[split:]], axis=-1).astype(np.float32)
+x_all = np.stack([sig_in_I, sig_in_Q, ch_e, ch_p], axis=-1).astype(np.float32)
+x_train, x_val = x_all[:split], x_all[split:]
 
 y_train_r = tgt_I[:split].astype(np.float32)
-y_test_r  = tgt_I[split:].astype(np.float32)
+y_val_r   = tgt_I[split:].astype(np.float32)
 y_train_i = tgt_Q[:split].astype(np.float32)
-y_test_i  = tgt_Q[split:].astype(np.float32)
+y_val_i   = tgt_Q[split:].astype(np.float32)
 
-print("train shapes:", x_train_r.shape, y_train_r.shape)
-print("test shapes :", x_test_r.shape,  y_test_r.shape)
+print("train shapes:", x_train.shape, y_train_r.shape)
+print("valid shapes:", x_val.shape,   y_val_r.shape)
 
-# ============================================================
-# BLSTM 모델 정의 (입력 3채널)
-# ============================================================
-model2_r = keras.Sequential()
-model2_i = keras.Sequential()
-model2_r.add(layers.Bidirectional(layers.LSTM(90, return_sequences=True, input_shape=(N, 3))))
-model2_i.add(layers.Bidirectional(layers.LSTM(90, return_sequences=True, input_shape=(N, 3))))
-model2_r.add(layers.Bidirectional(layers.LSTM(90)))
-model2_i.add(layers.Bidirectional(layers.LSTM(90)))
-model2_r.add(layers.Dense(N))
-model2_i.add(layers.Dense(N))
-model2_r.compile(loss='mse', optimizer='rmsprop', metrics=['mse'])
-model2_i.compile(loss='mse', optimizer='rmsprop', metrics=['mse'])
 
 # ============================================================
-# 훈련 스케줄 + Resume (새 prefix라 옛 모델과 섞이지 않음)
+# BLSTM 모델 정의 (입력 4채널, 은닉층 70/90)
 # ============================================================
-epoch_num  = [1, 1, 1, 2, 5, 10, 10, 10, 10, 10, 10, 10, 10, 10]
-epoch_num2 = [1, 2, 3, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-PREFIX = 'vlc_lstm_cond'
+def build_model():
+    m = keras.Sequential()
+    m.add(layers.Bidirectional(
+        layers.LSTM(UNITS_L1, return_sequences=True),
+        input_shape=(N, N_FEATURES)))
+    m.add(layers.Bidirectional(layers.LSTM(UNITS_L2)))
+    m.add(layers.Dense(N))
+    m.compile(loss='mse', optimizer='rmsprop', metrics=['mse'])
+    return m
+
+
+model2_r = build_model()
+model2_i = build_model()
+model2_r.summary()
+
+# ============================================================
+# 훈련 스케줄 + Resume (새 prefix라 옛 3-feature 모델과 섞이지 않음)
+# ============================================================
+epoch_num  = [1, 1, 1, 2, 5, 10, 10, 10, 10, 10]
+epoch_num2 = [1, 2, 3, 5, 10, 20, 30, 40, 50, 60]
+PREFIX = 'vlc_lstm_cond4'
 
 resume_idx, resume_path_r, resume_path_i = \
     find_latest_blstm_checkpoint(BASE_DIR, epoch_num2, PREFIX)
@@ -170,10 +181,12 @@ else:
 # ============================================================
 for idx in range(resume_idx, len(epoch_num)):
     print(f"\n===== Stage {idx} (누적 목표 {epoch_num2[idx]} epochs) =====")
-    print("Real Part")
-    model2_r.fit(x_train_r, y_train_r, epochs=epoch_num[idx], batch_size=128)
-    print("Imaginary Part")
-    model2_i.fit(x_train_i, y_train_i, epochs=epoch_num[idx], batch_size=128)
+    print("In-phase component")
+    model2_r.fit(x_train, y_train_r, epochs=epoch_num[idx], batch_size=BATCH_SIZE,
+                 validation_data=(x_val, y_val_r))
+    print("Quadrature component")
+    model2_i.fit(x_train, y_train_i, epochs=epoch_num[idx], batch_size=BATCH_SIZE,
+                 validation_data=(x_val, y_val_i))
 
     name_r = os.path.join(BASE_DIR, f'{PREFIX}_{epoch_num2[idx]}_r.h5')
     name_i = os.path.join(BASE_DIR, f'{PREFIX}_{epoch_num2[idx]}_i.h5')
@@ -181,27 +194,36 @@ for idx in range(resume_idx, len(epoch_num)):
     model2_r.save(name_r)
     model2_i.save(name_i)
 
-    model2_r.evaluate(x_test_r, y_test_r)
-    model2_i.evaluate(x_test_i, y_test_i)
+    model2_r.evaluate(x_val, y_val_r)
+    model2_i.evaluate(x_val, y_val_i)
 
 # ============================================================
-# 최종 진단: 조건화가 실제로 동작하는지 확인
-#  - eps가 작은 그룹과 큰 그룹에서 m=0(cos 에너지 위치) gain 비교
-#  - 조건화가 동작하면: eps 작은 그룹 gain > eps 큰 그룹 gain
-#    (predistortion gain 2/(2+eps)는 eps에 대해 감소하므로)
+# 최종 진단
+#  1) 조건화: eps 가 작은 그룹의 gain 이 큰 그룹보다 커야 함
+#     (predistortion gain 1/(1+eps/2) 는 eps 에 대해 감소)
+#  2) 교차항: phi 가 큰 그룹에서 Q -> I_PD 결합 계수가 커야 함
+#     (해석해의 교차항 계수는 sin(phi/2)/((1+eps/2) cos phi))
 # ============================================================
-yhat_r = model2_r.predict(x_test_r, batch_size=512)
-sig_test = x_test_r[..., 0]
-cols = np.arange(0, N, 4)          # X=4 기준 cos 에너지 위치
-eps_test = eps_seq[split:]
+yhat_r = model2_r.predict(x_val, batch_size=512)
+I_val, Q_val = x_val[..., 0], x_val[..., 1]
+eps_val, phi_val = eps_seq[split:], phi_seq[split:]
 
-def group_gain(rows):
-    xs = sig_test[rows][:, cols]
-    ps = yhat_r[rows][:, cols]
-    return np.sum(ps * xs) / np.sum(xs * xs)
 
-low, high = eps_test < 0, eps_test >= 0
-print(f"\n[조건화 진단] gain(m=0)  eps<{eps_mid} 그룹: {group_gain(low):.4f}   "
-      f"eps>{eps_mid} 그룹: {group_gain(high):.4f}")
-print("→ 왼쪽이 오른쪽보다 뚜렷이 크면 조건화 성공, 두 값이 같으면 조건화 실패")
-print("Evaluate : {}".format(np.average((yhat_r - y_test_r) ** 2)))
+def lsq_coeffs(rows):
+    """yhat_r ~ a*I + b*Q 의 최소제곱 계수."""
+    A = np.stack([I_val[rows].ravel(), Q_val[rows].ravel()], axis=1)
+    y = yhat_r[rows].ravel()
+    return np.linalg.lstsq(A, y, rcond=None)[0]
+
+
+a_lo, b_lo = lsq_coeffs(eps_val < 0)
+a_hi, b_hi = lsq_coeffs(eps_val >= 0)
+print(f"\n[조건화 진단] I 계수  eps 낮은 그룹 {a_lo:.4f} / 높은 그룹 {a_hi:.4f}")
+print("  -> 왼쪽이 뚜렷이 크면 eps 조건화 성공")
+
+_, b_plo = lsq_coeffs(phi_val < 0)
+_, b_phi = lsq_coeffs(phi_val >= 0)
+print(f"[교차항 진단] Q 계수  phi 낮은 그룹 {b_plo:.4f} / 높은 그룹 {b_phi:.4f}")
+print("  -> 오른쪽이 뚜렷이 크고 둘 다 0이 아니면 교차항 학습 성공")
+
+print("Evaluate : {}".format(np.average((yhat_r - y_val_r) ** 2)))

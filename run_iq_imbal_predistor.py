@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 from scipy.special import erfc
 from tensorflow import keras
 
-BASE_DIR = '/content/drive/MyDrive'
-MODEL_EPOCH = 100                     # 사용할 체크포인트 (누적 epoch)
+BASE_DIR = '/content/drive/MyDrive/IQ_imbalance_BLSTM/predistortion'
+MODEL_EPOCH = 60                     # 사용할 체크포인트 (누적 epoch)
 
 def gen_mapping(M, D):
     np.random.seed(1)
@@ -128,10 +128,8 @@ down_C = 0
 down_upsilon = 0
 
 blstm = 1
-# 새 predistortion 식에서 I_PD 가 Q 에도 의존하므로, 재학습 모델은
-# [I, Q, eps, phi] 4개 feature 를 받아야 한다. 기존 3-feature 모델을 그대로
-# 쓰려면 False 로 둔다 (교차항을 표현할 수 없어 오차 플로어가 남음).
-BLSTM_JOINT_INPUT = False
+# 재학습된 모델은 기저대역 [I, Q, eps, phi] 4개 feature 를 받는다.
+MODEL_PREFIX = 'vlc_lstm_cond4'
 
 ch_mode = 2   # 0: AWGN, 1: Rayleigh, 2: Rician
 K_list = [4, 8, 12, 16, 20]   # 테스트할 실제 Rician K factor
@@ -163,15 +161,11 @@ if blstm == 1:
     phi_mid, phi_half = float(scale['phi_mid']), float(scale['phi_half'])
     keras.backend.clear_session()
     recovery_dl_r = keras.models.load_model(
-        os.path.join(BASE_DIR, f'vlc_lstm_cond_{MODEL_EPOCH}_r.h5'), compile=False)
+        os.path.join(BASE_DIR, f'{MODEL_PREFIX}_{MODEL_EPOCH}_r.h5'), compile=False)
     recovery_dl_i = keras.models.load_model(
-        os.path.join(BASE_DIR, f'vlc_lstm_cond_{MODEL_EPOCH}_i.h5'), compile=False)
+        os.path.join(BASE_DIR, f'{MODEL_PREFIX}_{MODEL_EPOCH}_i.h5'), compile=False)
     print(f"[BLSTM] loaded cond model (epoch {MODEL_EPOCH}), "
           f"in_std={in_std:.6f}, tg_std={tg_std:.6f}")
-    if not BLSTM_JOINT_INPUT:
-        print("[BLSTM] 경고: 3-feature 모델입니다. 학습 타깃이 iq_predistort() 로 "
-              "재생성된 경우 [I, Q, eps, phi] 로 재학습 후 "
-              "BLSTM_JOINT_INPUT=True 로 바꾸십시오.")
 
 epsilon = up_upsilon
 phi = up_C
@@ -237,9 +231,9 @@ for i in range(X):
 
     # ── [조건화] BLSTM predistorter ──
     if blstm == 1:
-        # 신호 채널: 훈련과 동일한 규약 (train input_std로 정규화)
-        sig_r = (org_I.reshape(-1) / in_std).reshape(-1, N)
-        sig_i = (org_Q.reshape(-1) / in_std).reshape(-1, N)
+        # 신호 채널: 훈련과 동일한 규약 (기저대역 I/Q 를 train input_std로 정규화)
+        sig_r = (I_r.reshape(-1) / in_std).reshape(-1, N)
+        sig_i = (Q_r.reshape(-1) / in_std).reshape(-1, N)
 
         # 조건화 채널: pilot 추정치를 훈련과 동일하게 정규화
         eps_n = (est_epsilon - eps_mid) / eps_half
@@ -250,25 +244,19 @@ for i in range(X):
         ch_e = np.full_like(sig_r, eps_n)
         ch_p = np.full_like(sig_r, phi_n)
 
-        if BLSTM_JOINT_INPUT:
-            # I 채널과 Q 채널을 모두 입력 (새 predistortion 식과 정합)
-            x_r = np.stack([sig_r, sig_i, ch_e, ch_p], axis=-1).astype(np.float32)
-            x_i = np.stack([sig_r, sig_i, ch_e, ch_p], axis=-1).astype(np.float32)
-        else:
-            x_r = np.stack([sig_r, ch_e, ch_p], axis=-1).astype(np.float32)
-            x_i = np.stack([sig_i, ch_e, ch_p], axis=-1).astype(np.float32)
+        # 두 네트워크 모두 [I, Q, eps, phi] 를 입력받는다
+        x_in = np.stack([sig_r, sig_i, ch_e, ch_p], axis=-1).astype(np.float32)
 
-        out_r = recovery_dl_r.predict(x_r, batch_size=512, verbose=0)
-        out_i = recovery_dl_i.predict(x_i, batch_size=512, verbose=0)
+        out_r = recovery_dl_r.predict(x_in, batch_size=512, verbose=0)
+        out_i = recovery_dl_i.predict(x_in, batch_size=512, verbose=0)
 
-        # 복원: 네트워크 출력(target_std로 정규화된 스케일) × target_std
-        blstm_I_r = out_r.reshape(-1) * tg_std
-        blstm_Q_r = out_i.reshape(-1) * tg_std
+        # 복원 후 기저대역 상태에서 상향변환
+        blstm_I_r = (out_r.reshape(-1) * tg_std).reshape(-1, 1)
+        blstm_Q_r = (out_i.reshape(-1) * tg_std).reshape(-1, 1)
 
-        blstm_i_wave = blstm_I_r.reshape(-1, X) * up_cos_r
-        blstm_q_wave = blstm_Q_r.reshape(-1, X) * up_sin_r
         blstm_iq_out[i * change_block: (i + 1) * change_block, :] = \
-            blstm_i_wave.reshape(1, -1) + blstm_q_wave.reshape(1, -1)
+            np.dot(blstm_I_r, up_cos_r).reshape(1, -1) + \
+            np.dot(blstm_Q_r, up_sin_r).reshape(1, -1)
 
 # ============================================================
 # 신호 파워 (스케일 정합 확인 포함)
