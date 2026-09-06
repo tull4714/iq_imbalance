@@ -34,23 +34,53 @@ def sin_sampling(X, Fq, C, upsilon):
         a[t] = (1 - upsilon / 2) * np.sin((2 * Fq * np.pi * t) / X - np.pi * C / 360)
     return a.reshape(1, -1)
 
-def IQ_est(pilot0, pilot1, power_threshold=1e-6):
-    I  = np.real(pilot0)
-    Q  = np.imag(pilot0)
-    If = np.real(pilot1)
-    Qf = np.imag(pilot1)
-    denom = I**2 + Q**2
-    valid = denom > power_threshold
-    com_p = (I[valid]*If[valid] - Q[valid]*Qf[valid]) / (2.0 * denom[valid])
-    eps_T = np.mean(com_p)
-    num = I[valid] * (1.0 + eps_T)**2 - If[valid]
-    den = Q[valid] * (1.0 - eps_T**2)
-    safe = np.abs(den) > power_threshold
-    sin_phi = np.clip(num[safe] / den[safe], -1.0, 1.0)
-    com_C = np.arcsin(sin_phi)
-    phi_T = np.rad2deg(np.mean(com_C))
-    return 2 * eps_T, phi_T          # (1±eps/2) 컨벤션의 eps로 반환
+#def IQ_est(pilot0, pilot1, power_threshold=1e-6):
+#    I  = np.real(pilot0)
+#    Q  = np.imag(pilot0)
+#    If = np.real(pilot1)
+#    Qf = np.imag(pilot1)
+#    denom = I**2 + Q**2
+#    valid = denom > power_threshold
+#    com_p = (I[valid]*If[valid] - Q[valid]*Qf[valid]) / (2.0 * denom[valid])
+#    eps_T = np.mean(com_p)
+#    num = I[valid] * (1.0 + eps_T)**2 - If[valid]
+#    den = Q[valid] * (1.0 - eps_T**2)
+#    safe = np.abs(den) > power_threshold
+#    sin_phi = np.clip(num[safe] / den[safe], -1.0, 1.0)
+#    com_C = np.arcsin(sin_phi)
+#    phi_T = np.rad2deg(np.mean(com_C))
+#    return 2 * eps_T, phi_T          # (1±eps/2) 컨벤션의 eps로 반환
 
+def IQ_est(pilot0, pilot1, power_threshold=1e-6, eq_threshold=1e-3):
+    I, Q = np.real(pilot0), np.imag(pilot0)
+    If, Qf = np.real(pilot1), np.imag(pilot1)
+    A = I**2 + Q**2
+    D = I**2 - Q**2
+    K = I*If - Q*Qf
+    valid = A > power_threshold
+
+    eps = np.empty_like(I)
+    near = np.abs(D) < eq_threshold          # |I| ~ |Q| : 식 (8)
+    far = ~near
+    eps[near] = K[near] / A[near]
+    Delta = 4*I**2*Q**2 + D*K                # 식 (9)
+    ok = far & (Delta >= 0)
+    eps[ok] = (-2*A[ok] + 2*np.sqrt(Delta[ok])) / D[ok]
+    use = valid & (near | ok)
+    eps_T = np.mean(eps[use])
+    
+    h = eps_T / 2.0
+    denA = Q * (1 - h**2)                    # |Q| >= |I| 인 경우
+    denB = I * (1 - h**2)                    # |Q| <  |I| 인 경우
+    useA = use & (np.abs(Q) >= np.abs(I))
+    useB = use & (np.abs(Q) < np.abs(I))
+    s = np.empty_like(I)
+    s[useA] = (I[useA]*(1+h)**2 - If[useA]) / denA[useA]
+    s[useB] = (Q[useB]*(1-h)**2 - Qf[useB]) / denB[useB]
+    m = (useA | useB) & (np.abs(s) <= 1.0)
+    phi_T = np.rad2deg(np.mean(np.arcsin(s[m])))
+    return eps_T, phi_T
+    
 def iq_predistort(I, Q, epsilon, phi):
     """기저대역 I/Q 사전왜곡 (M^-1 적용).
 
