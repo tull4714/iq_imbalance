@@ -5,12 +5,13 @@ import os
 import matplotlib.pyplot as plt
 from scipy.special import erfc
 from tensorflow import keras
+from scipy.io import savemat
 
 BASE_DIR = '/content/drive/MyDrive/IQ_imbalance_BLSTM/predistortion'
 MODEL_EPOCH = 60                     # 사용할 체크포인트 (누적 epoch)
 
 def gen_mapping(M, D):
-    np.random.seed(1)
+    #np.random.seed(1)
     rand_I = np.random.rand(1, D)
     rand_Q = np.random.rand(1, D)
     s = None
@@ -34,23 +35,6 @@ def sin_sampling(X, Fq, C, upsilon):
         a[t] = (1 - upsilon / 2) * np.sin((2 * Fq * np.pi * t) / X - np.pi * C / 360)
     return a.reshape(1, -1)
 
-#def IQ_est(pilot0, pilot1, power_threshold=1e-6):
-#    I  = np.real(pilot0)
-#    Q  = np.imag(pilot0)
-#    If = np.real(pilot1)
-#    Qf = np.imag(pilot1)
-#    denom = I**2 + Q**2
-#    valid = denom > power_threshold
-#    com_p = (I[valid]*If[valid] - Q[valid]*Qf[valid]) / (2.0 * denom[valid])
-#    eps_T = np.mean(com_p)
-#    num = I[valid] * (1.0 + eps_T)**2 - If[valid]
-#    den = Q[valid] * (1.0 - eps_T**2)
-#    safe = np.abs(den) > power_threshold
-#    sin_phi = np.clip(num[safe] / den[safe], -1.0, 1.0)
-#    com_C = np.arcsin(sin_phi)
-#    phi_T = np.rad2deg(np.mean(com_C))
-#    return 2 * eps_T, phi_T          # (1±eps/2) 컨벤션의 eps로 반환
-
 def IQ_est(pilot0, pilot1, power_threshold=1e-6, eq_threshold=1e-3):
     I, Q = np.real(pilot0), np.imag(pilot0)
     If, Qf = np.real(pilot1), np.imag(pilot1)
@@ -62,25 +46,25 @@ def IQ_est(pilot0, pilot1, power_threshold=1e-6, eq_threshold=1e-3):
     eps = np.empty_like(I)
     near = np.abs(D) < eq_threshold          # |I| ~ |Q| : 식 (8)
     far = ~near
-    eps[near] = K[near] / A[near]
+    eps[near] = K[near] / (A[near] + np.finfo(float).eps) # Modified: Added np.finfo(float).eps
     Delta = 4*I**2*Q**2 + D*K                # 식 (9)
     ok = far & (Delta >= 0)
-    eps[ok] = (-2*A[ok] + 2*np.sqrt(Delta[ok])) / D[ok]
+    eps[ok] = (-2*A[ok] + 2*np.sqrt(Delta[ok])) / (D[ok] + np.finfo(float).eps) # Modified: Added np.finfo(float).eps
     use = valid & (near | ok)
     eps_T = np.mean(eps[use])
-    
+
     h = eps_T / 2.0
     denA = Q * (1 - h**2)                    # |Q| >= |I| 인 경우
     denB = I * (1 - h**2)                    # |Q| <  |I| 인 경우
     useA = use & (np.abs(Q) >= np.abs(I))
     useB = use & (np.abs(Q) < np.abs(I))
     s = np.empty_like(I)
-    s[useA] = (I[useA]*(1+h)**2 - If[useA]) / denA[useA]
-    s[useB] = (Q[useB]*(1-h)**2 - Qf[useB]) / denB[useB]
+    s[useA] = (I[useA]*(1+h)**2 - If[useA]) / (denA[useA] + np.finfo(float).eps) # Modified: Added np.finfo(float).eps
+    s[useB] = (Q[useB]*(1-h)**2 - Qf[useB]) / (denB[useB] + np.finfo(float).eps) # Modified: Added np.finfo(float).eps
     m = (useA | useB) & (np.abs(s) <= 1.0)
     phi_T = np.rad2deg(np.mean(np.arcsin(s[m])))
     return eps_T, phi_T
-    
+
 def iq_predistort(I, Q, epsilon, phi):
     """기저대역 I/Q 사전왜곡 (M^-1 적용).
 
@@ -99,9 +83,10 @@ def iq_predistort(I, Q, epsilon, phi):
     return I_pd, Q_pd
 
 def mirror_predistorter(sp, N, epsilon_c, phi_c_deg):
-    theta = -phi_c_deg * np.pi / 360   # 이 시스템(Q를 +sin에 싣는 컨벤션)에 맞춘 부호
-    term1 = 0.5 * (np.exp(1j * theta) / (1 + epsilon_c) + np.exp(-1j * theta) / (1 - epsilon_c))
-    term2 = 0.5 * (np.exp(-1j * theta) / (1 + epsilon_c) - np.exp(1j * theta) / (1 - epsilon_c))
+    epsilon = epsilon_c / 2
+    theta = -phi_c_deg * np.pi / (2 * 180)   # 이 시스템(Q를 +sin에 싣는 컨벤션)에 맞춘 부호
+    term1 = 0.5 * (np.exp(1j * theta) / (1 + epsilon) + np.exp(-1j * theta) / (1 - epsilon))
+    term2 = 0.5 * (np.exp(-1j * theta) / (1 + epsilon) - np.exp(1j * theta) / (1 - epsilon))
     sp_comp = np.zeros_like(sp, dtype=complex)
     for k in range(N):
         k_mirror = (N - k) % N
@@ -140,30 +125,37 @@ def calculate_evm(rx_symbols, ideal_symbols):
 # ============================================================
 # 파라미터
 # ============================================================
-N = 32
-Block = 10*10000
+N = 1024
+symb = 14
 M = 4
-D = N * Block
 X = 4
+frames = 10000                 # 프레임 수
 Fq = 1
-change_block = int(D / X)
+change_block = N * symb
+D = change_block * X * frames
 
 np.random.seed(seed=int(time.time()))
 
-# 테스트 지점: 루프 첫 블록에서 +0.1/+1 되므로 실제 평가는 (up_upsilon+0.1, up_C+1)
-# 예) 0.1/1 → eps=0.2, phi=2.  다른 지점을 보려면 이 두 값을 바꿔서 재실행.
-up_C = 1
-up_upsilon = 0.1
 down_C = 0
 down_upsilon = 0
 
-blstm = 1
+blstm = 0
 # 재학습된 모델은 기저대역 [I, Q, eps, phi] 4개 feature 를 받는다.
 MODEL_PREFIX = 'vlc_lstm_cond4'
 
 ch_mode = 2   # 0: AWGN, 1: Rayleigh, 2: Rician
 K_list = [4, 8, 12, 16, 20]   # 테스트할 실제 Rician K factor
 
+constel = 0
+if constel == 1:
+    CONST_SNR = 20
+    frames = 1
+    ch_mode = 0
+    epsilon = 0.3
+    phi = 5
+    D = change_block * X * frames   # 추가
+
+b_all = np.zeros((1, change_block * frames), dtype=complex)
 SNR = np.arange(0, 20, 2)
 org_ber = np.zeros((len(K_list), len(SNR)))
 ber = np.zeros((len(K_list), len(SNR)))
@@ -197,12 +189,7 @@ if blstm == 1:
     print(f"[BLSTM] loaded cond model (epoch {MODEL_EPOCH}), "
           f"in_std={in_std:.6f}, tg_std={tg_std:.6f}")
 
-epsilon = up_upsilon
-phi = up_C
-
-for i in range(X):
-    b = gen_mapping(M, change_block)
-
+for i in range(frames):
     # ── Pilot 루프백으로 (eps, phi) 추정 ──
     b_r = np.array([1 + 1j, -1 - 1j])
     pilot = np.concatenate((b_r, -b_r))
@@ -213,8 +200,9 @@ for i in range(X):
 
     org_up_cos = cos_sampling(X, Fq, 0, 0)
     org_up_sin = sin_sampling(X, Fq, 0, 0)
-    epsilon += 0.1
-    phi += 1
+    if constel != 1:
+        epsilon = np.random.uniform(0.2, 0.5)
+        phi = np.random.uniform(2, 5)
     up_cos_r = cos_sampling(X, Fq, phi, epsilon)
     up_sin_r = sin_sampling(X, Fq, phi, epsilon)
 
@@ -227,35 +215,39 @@ for i in range(X):
     rx_out = (rx_I_out * 2 / X) + (rx_Q_out * 2 / X) * 1j
 
     est_epsilon, est_phi = IQ_est(ps.flatten(), rx_out.flatten())
-    print(f"Epsilon: {epsilon}, Estimated epsilon: {est_epsilon}, "
+    print(f"{i}/{frames}th - "
+          f"Epsilon: {epsilon}, Estimated epsilon: {est_epsilon}, "
           f"Phi: {phi}, Estimated phi: {est_phi}\n")
 
     # ── 송신 데이터 ──
+    b = gen_mapping(M, change_block)
     sp = b.reshape(-1, N)
     ps = np.fft.ifft(sp).reshape(-1, 1)
     I_r = np.real(ps)
     Q_r = np.imag(ps)
 
+    b_all[:, i * change_block : (i+1) * change_block] = b
+    
     org_I = np.dot(I_r, org_up_cos)
     org_Q = np.dot(Q_r, org_up_sin)
-    org_IQ_out[i * change_block: (i + 1) * change_block, :] = \
+    org_IQ_out[:, i * change_block * X: (i + 1) * change_block * X] = \
         org_I.reshape(1, -1) + org_Q.reshape(1, -1)
 
     conv_I = np.dot(I_r, up_cos_r)
     conv_Q = np.dot(Q_r, up_sin_r)
-    IQ_out_r[i * change_block: (i + 1) * change_block, :] = \
+    IQ_out_r[:, i * change_block * X: (i + 1) * change_block * X] = \
         conv_I.reshape(1, -1) + conv_Q.reshape(1, -1)
 
     # ── 기저대역 predistortion ──
     # 기저대역 I_r, Q_r 에 M^-1 을 적용한 뒤 상향변환한다.
     I_r_Comp, Q_r_Comp = iq_predistort(I_r, Q_r, est_epsilon, est_phi)
-    pred_iq_out[i * change_block: (i + 1) * change_block, :] = \
+    pred_iq_out[:, i * change_block * X: (i + 1) * change_block * X] = \
         np.dot(I_r_Comp, up_cos_r).reshape(1, -1) + np.dot(Q_r_Comp, up_sin_r).reshape(1, -1)
 
     # ── 주파수영역(mirror) predistortion: 추정치 사용으로 복원 ──
-    sp_mirror = mirror_predistorter(sp, N, 0.35 / 2, 3.5)
+    sp_mirror = mirror_predistorter(sp, N, 0.35, 3.5)
     ps_mirror = np.fft.ifft(sp_mirror).reshape(-1, 1)
-    mirror_iq_out[i * change_block: (i + 1) * change_block, :] = \
+    mirror_iq_out[:, i * change_block * X: (i + 1) * change_block * X] = \
         (np.dot(np.real(ps_mirror), up_cos_r)).reshape(1, -1) + \
         (np.dot(np.imag(ps_mirror), up_sin_r)).reshape(1, -1)
 
@@ -304,7 +296,9 @@ if blstm == 1:
 for i_k in range(len(K_list)):
     print("Channel mode: ", ch_mode)
     for m in range(len(SNR)):
-        snr_wp = 10 ** (SNR[m] / 10)
+        snr_now = CONST_SNR if constel == 1 else SNR[m]
+        print(f"SNR: {snr_now}\n")
+        snr_wp = 10 ** (snr_now / 10)
 
         sgma_org = np.sqrt(X * sigpwr_org / snr_wp / 2 / np.log2(M))
         sgma = np.sqrt(X * sigpwr / snr_wp / 2 / np.log2(M))
@@ -323,12 +317,12 @@ for i_k in range(len(K_list)):
             n_blstm  = sgma_blstm  * base
 
         if ch_mode == 0:      # AWGN
-            org_receive = org_IQ_out + n
+            org_receive = org_IQ_out + n_org
             receive_data = IQ_out_r + n
-            pred_rev = pred_iq_out + n
+            pred_rev = pred_iq_out + n_pred
             mirror_rev = mirror_iq_out + n_mirror
             if blstm == 1:
-                blstm_rev = blstm_iq_out + n
+                blstm_rev = blstm_iq_out + n_blstm
         elif ch_mode == 1:    # Rayleigh
             h_Ideal = (np.random.randn(org_IQ_out.size) + 1j * np.random.randn(org_IQ_out.size)) / np.sqrt(2)
             h_normal = (np.random.randn(IQ_out_r.size) + 1j * np.random.randn(IQ_out_r.size)) / np.sqrt(2)
@@ -375,32 +369,43 @@ for i_k in range(len(K_list)):
 
         mse_blstm_txt = ""
         if blstm == 1:
-            mse_blstm = np.mean(np.abs(b - blstm_fft_out.reshape(1, -1)) ** 2)
-            evm_blstm = calculate_evm(blstm_fft_out.reshape(1, -1), b)
+            mse_blstm = np.mean(np.abs(b_all - blstm_fft_out.reshape(1, -1)) ** 2)
+            evm_blstm = calculate_evm(blstm_fft_out.reshape(1, -1), b_all)
             mse_blstm_txt = f", blstm MSE {mse_blstm:.5f}, EVM {evm_blstm[1]:.2f}%"
-        mse_org = np.mean(np.abs(b - org_fft_out.reshape(1, -1)) ** 2)
-        evm_org = calculate_evm(org_fft_out.reshape(1, -1), b)
-        mse_iq = np.mean(np.abs(b - fft_out_r.reshape(1, -1)) ** 2)
-        evm_iq = calculate_evm(fft_out_r.reshape(1, -1), b)
-        mse_mirror = np.mean(np.abs(b - mirror_fft_out.reshape(1, -1)) ** 2)
-        evm_mirror = calculate_evm(mirror_fft_out.reshape(1, -1), b)
-        mse_pred = np.mean(np.abs(b - pred_fft_out.reshape(1, -1)) ** 2)
-        evm_pred = calculate_evm(pred_fft_out.reshape(1, -1), b)
-        print(f"SNR {SNR[m]}dB: ideal MSE {mse_org:.5f}, EVM {evm_org[1]:.2f}%, IQ imbalance MSE {mse_iq:.5f}, EVM {evm_iq[1]:.2f}%, mirror MSE {mse_mirror:.5f}, EVM {evm_mirror[1]:.2f}%")
-        print(f"SNR {SNR[m]}dB: pred MSE {mse_pred:.5f}, EVM {evm_pred[1]:.2f}%{mse_blstm_txt}")
-
-        org_ber[i_k, m] = ber_call_qpsk(hard_decision(org_fft_out.reshape(1, -1), M), b, M)
-        ber[i_k, m] = ber_call_qpsk(hard_decision(fft_out_r.reshape(1, -1), M), b, M)
-        pred_ber[i_k, m] = ber_call_qpsk(hard_decision(pred_fft_out.reshape(1, -1), M), b, M)
-        mirror_ber[i_k, m] = ber_call_qpsk(hard_decision(mirror_fft_out.reshape(1, -1), M), b, M)
+        mse_org = np.mean(np.abs(b_all - org_fft_out.reshape(1, -1)) ** 2)
+        evm_org = calculate_evm(org_fft_out.reshape(1, -1), b_all)
+        mse_iq = np.mean(np.abs(b_all - fft_out_r.reshape(1, -1)) ** 2)
+        evm_iq = calculate_evm(fft_out_r.reshape(1, -1), b_all)
+        mse_mirror = np.mean(np.abs(b_all - mirror_fft_out.reshape(1, -1)) ** 2)
+        evm_mirror = calculate_evm(mirror_fft_out.reshape(1, -1), b_all)
+        mse_pred = np.mean(np.abs(b_all - pred_fft_out.reshape(1, -1)) ** 2)
+        evm_pred = calculate_evm(pred_fft_out.reshape(1, -1), b_all)
+        print(f"SNR {snr_now}dB: ideal MSE {mse_org:.5f}, EVM {evm_org[1]:.2f}%, IQ imbalance MSE {mse_iq:.5f}, EVM {evm_iq[1]:.2f}%, mirror MSE {mse_mirror:.5f}, EVM {evm_mirror[1]:.2f}%")
+        print(f"SNR {snr_now}dB: pred MSE {mse_pred:.5f}, EVM {evm_pred[1]:.2f}%{mse_blstm_txt}")
+            
+        org_ber[i_k, m] = ber_call_qpsk(hard_decision(org_fft_out.reshape(1, -1), M), b_all, M)
+        ber[i_k, m] = ber_call_qpsk(hard_decision(fft_out_r.reshape(1, -1), M), b_all, M)
+        pred_ber[i_k, m] = ber_call_qpsk(hard_decision(pred_fft_out.reshape(1, -1), M), b_all, M)
+        mirror_ber[i_k, m] = ber_call_qpsk(hard_decision(mirror_fft_out.reshape(1, -1), M), b_all, M)
         if blstm == 1:
-            blstm_ber[i_k, m] = ber_call_qpsk(hard_decision(blstm_fft_out.reshape(1, -1), M), b, M)
+            blstm_ber[i_k, m] = ber_call_qpsk(hard_decision(blstm_fft_out.reshape(1, -1), M), b_all, M)
             print(f"org:{org_ber[i_k, m]:.5f}, imb:{ber[i_k, m]:.5f}, pred:{pred_ber[i_k, m]:.5f}, "
                   f"blstm:{blstm_ber[i_k, m]:.5f}, mirror:{mirror_ber[i_k, m]:.5f}\n")
         else:
             print(f"org:{org_ber[i_k, m]:.5f}, imb:{ber[i_k, m]:.5f}, "
                   f"pred:{pred_ber[i_k, m]:.5f}, mirror:{mirror_ber[i_k, m]:.5f}\n")
-                  
+
+        if constel == 1:
+            savemat(os.path.join(BASE_DIR, f'variable/constellation.mat'), {
+                'iq':      fft_out_r.reshape(-1),
+                'pred':    pred_fft_out.reshape(-1),
+                'ref':     b_all.reshape(-1),
+                'snr':     CONST_SNR,
+                'epsilon': epsilon,
+                'phi':     phi})
+            print(f"[const] Eb/N0={CONST_SNR}dB, {change_block * frames} symbols saved")
+            break
+            
     if ch_mode == 0 or ch_mode == 1:
         break
 
@@ -408,18 +413,21 @@ for i in range(len(SNR)):
     t_snr = 10 ** (SNR[i] / 10)
     theo_err[i] = (1 / 2) * erfc(np.sqrt(t_snr)) - (1 / 8) * (erfc(np.sqrt(t_snr))) ** 2
 
-plt.figure(4)
-plt.semilogy(SNR, org_ber[4], 'g', label='No IQ imbalance BER')
-if ch_mode == 0:
-    plt.semilogy(SNR, theo_err, 'k--', label='Theoretical BER')
-plt.semilogy(SNR, ber[4], 'b', label='Simulated BER (Imbalance)')
-plt.semilogy(SNR, pred_ber[4], 'r', label='Time-Domain Predistortion')
-if blstm == 1:
-    plt.semilogy(SNR, blstm_ber[4], 'm', label='BLSTM (conditioned)')
-plt.semilogy(SNR, mirror_ber[4], 'c-x', label='Conv Freq-Domain Pre-dist')
-plt.xlabel('SNR (dB)')
-plt.ylabel('BER')
-plt.axis([0, 20, 1e-5, 1])
-plt.grid(True, which='both')
-plt.legend()
-plt.savefig('BER_plot_cond.png')
+if constel != 1:
+    plt.figure(4)
+    plt.semilogy(SNR, org_ber[4], 'g', label='No IQ imbalance BER')
+    if ch_mode == 0:
+        plt.semilogy(SNR, theo_err, 'k--', label='Theoretical BER')
+    plt.semilogy(SNR, ber[4], 'b', label='Simulated BER (Imbalance)')
+    plt.semilogy(SNR, pred_ber[4], 'r', label='Time-Domain Predistortion')
+    if blstm == 1:
+        plt.semilogy(SNR, blstm_ber[4], 'm', label='BLSTM (conditioned)')
+    plt.semilogy(SNR, mirror_ber[4], 'c-x', label='Conv Freq-Domain Pre-dist')
+    plt.xlabel('SNR (dB)')
+    plt.ylabel('BER')
+    plt.axis([0, 20, 1e-5, 1])
+    plt.grid(True, which='both')
+    plt.legend()
+    plt.savefig('BER_plot_cond.png')
+else:
+    plt.plot(np.real(fft_out_r), np.imag(fft_out_r), 'b.');
