@@ -43,14 +43,15 @@ def IQ_est(pilot0, pilot1, power_threshold=1e-6, eq_threshold=1e-3):
     K = I*If - Q*Qf
     valid = A > power_threshold
 
-    eps = np.empty_like(I)
-    near = np.abs(D) < eq_threshold          # |I| ~ |Q| : 식 (8)
-    far = ~near
-    eps[near] = K[near] / (A[near] + np.finfo(float).eps) # Modified: Added np.finfo(float).eps
-    Delta = 4*I**2*Q**2 + D*K                # 식 (9)
-    ok = far & (Delta >= 0)
-    eps[ok] = (-2*A[ok] + 2*np.sqrt(Delta[ok])) / (D[ok] + np.finfo(float).eps) # Modified: Added np.finfo(float).eps
-    use = valid & (near | ok)
+    # [MSE 수정] 논문 식 (9): ||I|-|Q|| >= eta 인 샘플만 집합 T 로 사용.
+    #  (이전: |I^2-Q^2| < 1e-3 샘플에 근사식 K/A 를 적용 -> 슬롯 기준에서 편향 발생)
+    eps = np.zeros_like(I)
+    far = np.abs(np.abs(I) - np.abs(Q)) >= eq_threshold
+    Delta = 4*I**2*Q**2 + D*K                # 식 (7)의 판별식
+    use = valid & far & (Delta >= 0)
+    eps[use] = (-2*A[use] + 2*np.sqrt(Delta[use])) / D[use]   # 식 (8)
+    if not np.any(use):
+        return np.nan, np.nan
     eps_T = np.mean(eps[use])
 
     h = eps_T / 2.0
@@ -58,11 +59,13 @@ def IQ_est(pilot0, pilot1, power_threshold=1e-6, eq_threshold=1e-3):
     denB = I * (1 - h**2)                    # |Q| <  |I| 인 경우
     useA = use & (np.abs(Q) >= np.abs(I))
     useB = use & (np.abs(Q) < np.abs(I))
-    s = np.empty_like(I)
-    s[useA] = (I[useA]*(1+h)**2 - If[useA]) / (denA[useA] + np.finfo(float).eps) # Modified: Added np.finfo(float).eps
-    s[useB] = (Q[useB]*(1-h)**2 - Qf[useB]) / (denB[useB] + np.finfo(float).eps) # Modified: Added np.finfo(float).eps
+    s = np.full_like(I, np.inf)
+    s[useA] = (I[useA]*(1+h)**2 - If[useA]) / denA[useA]
+    s[useB] = (Q[useB]*(1-h)**2 - Qf[useB]) / denB[useB]
     m = (useA | useB) & (np.abs(s) <= 1.0)
-    phi_T = np.rad2deg(np.mean(np.arcsin(s[m])))
+    if not np.any(m):
+        return eps_T, np.nan
+    phi_T = np.rad2deg(np.mean(np.arcsin(s[m])))   # 식 (10), (11)
     return eps_T, phi_T
 
 def iq_predistort(I, Q, epsilon, phi):
@@ -123,6 +126,46 @@ def calculate_evm(rx_symbols, ideal_symbols):
     return evm_rms, evm_rms * 100, 20 * np.log10(evm_rms)
 
 # ============================================================
+# [MSE 추가] 피드백 루프백 + 피드백 경로 잡음
+# ============================================================
+def loopback(ps, up_cos, up_sin, X):
+    """IQI 상향변환 -> (같은 IQI) 피드백 하향변환. ps: 기저대역 복소 신호."""
+    ps = np.asarray(ps).reshape(-1, 1)
+    rf = np.dot(np.real(ps), up_cos) + np.dot(np.imag(ps), up_sin)   # (n, X)
+    fb_I = np.dot(rf, up_cos.T) * 2 / X
+    fb_Q = np.dot(rf, up_sin.T) * 2 / X
+    return (fb_I + 1j * fb_Q).flatten()
+
+def add_fb_noise(fb, fb_snr_db):
+    """피드백 관측 (I~, Q~)에 복소 AWGN 추가. fb_snr_db = inf 이면 무잡음."""
+    if np.isinf(fb_snr_db):
+        return fb
+    p = np.mean(np.abs(fb)**2)
+    sig = np.sqrt(p / 10**(fb_snr_db / 10) / 2)
+    return fb + sig * (np.random.randn(*fb.shape) + 1j * np.random.randn(*fb.shape))
+
+def estimation_reference(est_ref, b_slot=None):
+    """추정에 쓰는 기준 신호. 'pilot': 4-point pilot, 'slot': 송신 슬롯(14 OFDM 심볼)."""
+    if est_ref == 'pilot':
+        b_r = np.array([1 + 1j, -1 - 1j])
+        return np.fft.ifft(np.concatenate((b_r, -b_r)))
+    if b_slot is None:
+        b_slot = gen_mapping(M, change_block)
+    return np.fft.ifft(b_slot.reshape(-1, N)).flatten()
+
+def residual_evm(b_slot, eps, phi, est_eps, est_phi):
+    """추정치로 predistortion 후 (채널/잡음 없이) 남는 EVM [%]."""
+    sp_ = b_slot.reshape(-1, N)
+    ps_ = np.fft.ifft(sp_).reshape(-1, 1)
+    I_c, Q_c = iq_predistort(np.real(ps_), np.imag(ps_), est_eps, est_phi)
+    uc, us = cos_sampling(X, Fq, phi, eps), sin_sampling(X, Fq, phi, eps)
+    rf = np.dot(I_c, uc) + np.dot(Q_c, us)
+    dc, ds = cos_sampling(X, Fq, 0, 0), sin_sampling(X, Fq, 0, 0)
+    y = np.dot(rf, dc.T) * 2 / X + 1j * np.dot(rf, ds.T) * 2 / X
+    Y = np.fft.fft(y.reshape(-1, N), N)
+    return calculate_evm(Y.reshape(1, -1), b_slot.reshape(1, -1))[1]
+
+# ============================================================
 # 파라미터
 # ============================================================
 N = 1024
@@ -135,6 +178,18 @@ change_block = N * symb
 D = change_block * X * frames
 
 np.random.seed(seed=int(time.time()))
+
+# ── [MSE 추가] 피드백 잡음 / 추정 MSE 설정 ──
+EPS_RANGE = (0.1, 0.6)         # 본 루프와 같은 epsilon 범위
+PHI_RANGE = (1.0, 6.0)         # 본 루프와 같은 phi 범위 [deg]
+EST_REF   = 'pilot'            # 'pilot': 4-point pilot (기존), 'slot': 송신 슬롯 14 OFDM 심볼
+FB_SNR_MAIN = np.inf           # BER/EVM 루프의 피드백 SNR [dB] (inf = 무잡음 = 기존 결과)
+
+mse_sweep   = 1                # 1: 피드백 SNR 대 추정 MSE 스윕 실행
+run_ber     = 1                # 0: 스윕만 하고 BER/EVM 시뮬레이션은 생략
+FB_SNR_LIST = np.arange(0, 62, 4).astype(float)
+MSE_TRIALS  = 1000             # 피드백 SNR 점당 (eps, phi) 실현 수
+MSE_REFS    = ['pilot', 'slot']
 
 down_C = 0
 down_upsilon = 0
@@ -189,38 +244,96 @@ if blstm == 1:
     print(f"[BLSTM] loaded cond model (epoch {MODEL_EPOCH}), "
           f"in_std={in_std:.6f}, tg_std={tg_std:.6f}")
 
-for i in range(frames):
-    # ── Pilot 루프백으로 (eps, phi) 추정 ──
-    b_r = np.array([1 + 1j, -1 - 1j])
-    pilot = np.concatenate((b_r, -b_r))
-    sp = pilot
-    ps = np.fft.ifft(sp).reshape(1, -1)
-    I = np.real(ps)
-    Q = np.imag(ps)
+# ============================================================
+# [MSE 추가] 피드백 SNR 대 파라미터 추정 MSE 스윕
+#   MSE_eps = E[(eps_T - eps)^2],  MSE_phi = E[(phi_T - phi)^2] [deg^2]
+#   residual EVM: 추정치로 predistortion 후 채널/수신잡음 없이 남는 EVM
+# ============================================================
+if mse_sweep == 1:
+    # 무잡음 확인: 추정치가 참값과 일치해야 함
+    _uc, _us = cos_sampling(X, Fq, 5.0, 0.3), sin_sampling(X, Fq, 5.0, 0.3)
+    _ref = estimation_reference('pilot')
+    print("[MSE] noiseless check (0.3, 5.0):", IQ_est(_ref, loopback(_ref, _uc, _us, X)))
 
+    mse_eps = np.zeros((len(MSE_REFS), len(FB_SNR_LIST)))
+    mse_phi = np.zeros_like(mse_eps)
+    res_evm = np.zeros_like(mse_eps)
+    fail    = np.zeros_like(mse_eps)
+    for r_i, ref_name in enumerate(MSE_REFS):
+        for s_i, fb_snr in enumerate(FB_SNR_LIST):
+            se_e, se_p, ev = [], [], []
+            for _ in range(MSE_TRIALS):
+                eps_t = np.random.uniform(*EPS_RANGE)
+                phi_t = np.random.uniform(*PHI_RANGE)
+                b_slot = gen_mapping(M, change_block)
+                ref = estimation_reference(ref_name, b_slot)
+                uc, us = cos_sampling(X, Fq, phi_t, eps_t), sin_sampling(X, Fq, phi_t, eps_t)
+                fb = add_fb_noise(loopback(ref, uc, us, X), fb_snr)
+                with np.errstate(all='ignore'):
+                    e_hat, p_hat = IQ_est(ref, fb)
+                if not (np.isfinite(e_hat) and np.isfinite(p_hat)):
+                    fail[r_i, s_i] += 1
+                    continue
+                se_e.append((e_hat - eps_t)**2)
+                se_p.append((p_hat - phi_t)**2)
+                ev.append(residual_evm(b_slot, eps_t, phi_t, e_hat, p_hat))
+            mse_eps[r_i, s_i] = np.mean(se_e)
+            mse_phi[r_i, s_i] = np.mean(se_p)
+            res_evm[r_i, s_i] = np.mean(ev)
+            print(f"[MSE] ref={ref_name:5s} fb SNR {fb_snr:4.0f} dB : "
+                  f"MSE_eps {mse_eps[r_i, s_i]:.3e}, MSE_phi {mse_phi[r_i, s_i]:.3e} deg^2, "
+                  f"residual EVM {res_evm[r_i, s_i]:.3f}%, fail {int(fail[r_i, s_i])}")
+
+    os.makedirs(os.path.join(BASE_DIR, 'variable'), exist_ok=True)
+    savemat(os.path.join(BASE_DIR, 'variable/est_mse.mat'), {
+        'fb_snr': FB_SNR_LIST, 'refs': np.array(MSE_REFS, dtype=object),
+        'mse_eps': mse_eps, 'mse_phi': mse_phi, 'res_evm': res_evm, 'fail': fail,
+        'eps_range': np.array(EPS_RANGE), 'phi_range': np.array(PHI_RANGE),
+        'trials': MSE_TRIALS})
+
+    labels = {'pilot': '4-point pilot', 'slot': f'{symb} OFDM symbols (N={N})'}
+    for data_, ylab, fname in [(mse_eps, r'MSE of $\hat{\varepsilon}$', 'MSE_eps'),
+                               (mse_phi, r'MSE of $\hat{\varphi}$ [deg$^2$]', 'MSE_phi'),
+                               (res_evm, 'Residual EVM [%]', 'Residual_EVM')]:
+        plt.figure(figsize=(3.5, 2.7))
+        for r_i, ref_name in enumerate(MSE_REFS):
+            plt.semilogy(FB_SNR_LIST, data_[r_i], 'o-' if r_i == 0 else 's-',
+                         ms=4, lw=1.1, label=labels[ref_name])
+        plt.xlabel('Feedback SNR (dB)', fontsize=9)
+        plt.ylabel(ylab, fontsize=9)
+        plt.tick_params(labelsize=8)
+        plt.grid(True, which='both', ls=':', lw=0.5)
+        plt.legend(fontsize=7)
+        plt.tight_layout()
+        plt.savefig(fname + '.png', dpi=200)
+        plt.savefig(fname + '.pdf')
+
+if run_ber != 1:
+    frames = 0
+
+se_eps_main, se_phi_main = [], []   # 본 루프의 추정 제곱오차
+for i in range(frames):
     org_up_cos = cos_sampling(X, Fq, 0, 0)
     org_up_sin = sin_sampling(X, Fq, 0, 0)
     if constel != 1:
-        epsilon = np.random.uniform(0.2, 0.5)
-        phi = np.random.uniform(2, 5)
+        epsilon = np.random.uniform(*EPS_RANGE)
+        phi = np.random.uniform(*PHI_RANGE)
     up_cos_r = cos_sampling(X, Fq, phi, epsilon)
     up_sin_r = sin_sampling(X, Fq, phi, epsilon)
 
-    pilot_I = np.dot(I.reshape(-1, 1), up_cos_r)
-    pilot_Q = np.dot(Q.reshape(-1, 1), up_sin_r)
-    pilot_IQ_out = pilot_I.reshape(1, -1) + pilot_Q.reshape(1, -1)
+    # ── 송신 데이터 ──
+    b = gen_mapping(M, change_block)
 
-    rx_I_out = np.dot(pilot_IQ_out.reshape(-1, X), up_cos_r.T)
-    rx_Q_out = np.dot(pilot_IQ_out.reshape(-1, X), up_sin_r.T)
-    rx_out = (rx_I_out * 2 / X) + (rx_Q_out * 2 / X) * 1j
-
-    est_epsilon, est_phi = IQ_est(ps.flatten(), rx_out.flatten())
+    # ── 피드백 루프백으로 (eps, phi) 추정 (피드백 SNR = FB_SNR_MAIN) ──
+    ref = estimation_reference(EST_REF, b)
+    rx_out = add_fb_noise(loopback(ref, up_cos_r, up_sin_r, X), FB_SNR_MAIN)
+    est_epsilon, est_phi = IQ_est(ref, rx_out)
+    se_eps_main.append((est_epsilon - epsilon)**2)
+    se_phi_main.append((est_phi - phi)**2)
     print(f"{i}/{frames}th - "
           f"Epsilon: {epsilon}, Estimated epsilon: {est_epsilon}, "
           f"Phi: {phi}, Estimated phi: {est_phi}\n")
 
-    # ── 송신 데이터 ──
-    b = gen_mapping(M, change_block)
     sp = b.reshape(-1, N)
     ps = np.fft.ifft(sp).reshape(-1, 1)
     I_r = np.real(ps)
@@ -279,6 +392,12 @@ for i in range(frames):
         blstm_iq_out[i * change_block: (i + 1) * change_block, :] = \
             np.dot(blstm_I_r, up_cos_r).reshape(1, -1) + \
             np.dot(blstm_Q_r, up_sin_r).reshape(1, -1)
+
+if run_ber != 1:
+    raise SystemExit("[MSE] sweep finished (run_ber = 0)")
+
+print(f"[MSE] main loop (ref={EST_REF}, fb SNR={FB_SNR_MAIN} dB, {frames} frames): "
+      f"MSE_eps {np.nanmean(se_eps_main):.3e}, MSE_phi {np.nanmean(se_phi_main):.3e} deg^2")
 
 # ============================================================
 # 신호 파워 (스케일 정합 확인 포함)
