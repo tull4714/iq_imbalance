@@ -96,6 +96,40 @@ def mirror_predistorter(sp, N, epsilon_c, phi_c_deg):
         sp_comp[:, k] = term1 * sp[:, k] + term2 * np.conj(sp[:, k_mirror])
     return sp_comp
 
+# ============================================================
+# [RX 비교 기법] 파일럿 기반 수신단 TX IQI 보상
+#   송신단 IQI 가 있으면 수신 FFT 출력은 (평탄 IQI 모델)
+#       Y_k = mu * X_k + nu * conj(X_{-k}) + W_k ,   -k = (N - k) mod N
+#   1) 추정: 추정 구간마다 알려진 파일럿 OFDM 심볼 P 로 (mu, nu) 를 LS 추정
+#   2) 보상: X_k = (conj(mu) Y_k - nu conj(Y_{-k})) / (|mu|^2 - |nu|^2)
+# ============================================================
+def rx_iqi_estimate(Yp, Pp, N):
+    """Yp, Pp: (F, P, N) 수신/송신 파일럿. 반환: mu, nu (각 (F,))."""
+    F = Yp.shape[0]
+    mi = (N - np.arange(N)) % N
+    a1 = Pp.reshape(F, -1)
+    a2 = np.conj(Pp[..., mi]).reshape(F, -1)
+    y = Yp.reshape(F, -1)
+    G = np.empty((F, 2, 2), dtype=complex)
+    G[:, 0, 0] = np.sum(np.abs(a1)**2, axis=1)
+    G[:, 0, 1] = np.sum(np.conj(a1) * a2, axis=1)
+    G[:, 1, 0] = np.conj(G[:, 0, 1])
+    G[:, 1, 1] = np.sum(np.abs(a2)**2, axis=1)
+    rhs = np.stack([np.sum(np.conj(a1) * y, axis=1),
+                    np.sum(np.conj(a2) * y, axis=1)], axis=1)[..., None]
+    sol = np.linalg.solve(G, rhs)[..., 0]
+    return sol[:, 0], sol[:, 1]
+
+def rx_iqi_compensate(Y, mu, nu, N):
+    """Y: (F*symb, N) 데이터 FFT 출력. 구간별 (mu, nu) 로 미러 쌍 분리."""
+    F = len(mu)
+    mi = (N - np.arange(N)) % N
+    Y3 = Y.reshape(F, -1, N)
+    Ym = np.conj(Y3[..., mi])
+    mu_, nu_ = mu[:, None, None], nu[:, None, None]
+    Xh = (np.conj(mu_) * Y3 - nu_ * Ym) / (np.abs(mu_)**2 - np.abs(nu_)**2)
+    return Xh.reshape(-1, N)
+
 def hard_decision(in_vector, M):
     if M == 2:
         out_vector = np.sign(np.real(in_vector))
@@ -172,7 +206,7 @@ N = 1024
 symb = 14
 M = 4
 X = 4
-frames = 10000                 # 프레임 수
+frames = 1000                 # 프레임 수
 Fq = 1
 change_block = N * symb
 D = change_block * X * frames
@@ -180,14 +214,14 @@ D = change_block * X * frames
 np.random.seed(seed=int(time.time()))
 
 # ── [MSE 추가] 피드백 잡음 / 추정 MSE 설정 ──
-EPS_RANGE = (0.1, 0.6)         # 본 루프와 같은 epsilon 범위
-PHI_RANGE = (1.0, 6.0)         # 본 루프와 같은 phi 범위 [deg]
-EST_REF   = 'pilot'            # 'pilot': 4-point pilot (기존), 'slot': 송신 슬롯 14 OFDM 심볼
+EPS_RANGE = (0.1, 0.6)         # 논문과 같은 epsilon 범위
+PHI_RANGE = (1.0, 6.0)         # 논문과 같은 phi 범위 [deg]
+EST_REF   = 'slot'            # 'pilot': 4-point pilot (기존), 'slot': 송신 슬롯 14 OFDM 심볼
 FB_SNR_MAIN = np.inf           # BER/EVM 루프의 피드백 SNR [dB] (inf = 무잡음 = 기존 결과)
 
 mse_sweep   = 1                # 1: 피드백 SNR 대 추정 MSE 스윕 실행
 run_ber     = 1                # 0: 스윕만 하고 BER/EVM 시뮬레이션은 생략
-FB_SNR_LIST = np.arange(0, 62, 4).astype(float)
+FB_SNR_LIST = np.arange(0, 21, 1).astype(float)
 MSE_TRIALS  = 1000             # 피드백 SNR 점당 (eps, phi) 실현 수
 MSE_REFS    = ['pilot', 'slot']
 
@@ -197,6 +231,14 @@ down_upsilon = 0
 blstm = 0
 # 재학습된 모델은 기저대역 [I, Q, eps, phi] 4개 feature 를 받는다.
 MODEL_PREFIX = 'vlc_lstm_cond4'
+
+# ── [RX 비교 기법] 파일럿 기반 수신단 보상 설정 ──
+rx_comp = 1                    # 1: 수신단 파일럿 기반 TX IQI 보상 기법 추가
+RX_PILOT_SYMB = 1              # 추정 구간(14 데이터 심볼)마다 추가로 보내는 파일럿 OFDM 심볼 수
+# 파일럿 에너지 손실: 같은 데이터 비트에 (symb + P) 심볼 에너지를 쓰므로 Eb/N0 가 이만큼 커짐
+pilot_overhead = 0
+if pilot_overhead == 1:
+    RX_OVERHEAD_DB = 10 * np.log10((symb + RX_PILOT_SYMB) / symb)
 
 ch_mode = 2   # 0: AWGN, 1: Rayleigh, 2: Rician
 K_list = [4, 8, 12, 16, 20]   # 테스트할 실제 Rician K factor
@@ -218,6 +260,10 @@ pred_ber = np.zeros((len(K_list), len(SNR)))
 mirror_ber = np.zeros((len(K_list), len(SNR)))
 if blstm == 1:
     blstm_ber = np.zeros((len(K_list), len(SNR)))
+if rx_comp == 1:
+    rxc_ber = np.zeros((len(K_list), len(SNR)))
+    pilot_all = np.zeros((frames, RX_PILOT_SYMB, N), dtype=complex)        # 알려진 파일럿
+    pilot_iq_out = np.zeros((1, frames * RX_PILOT_SYMB * N * X))           # 파일럿 RF 신호
 theo_err = np.zeros(len(SNR))
 
 org_IQ_out = np.zeros((1, D))
@@ -364,6 +410,16 @@ for i in range(frames):
         (np.dot(np.real(ps_mirror), up_cos_r)).reshape(1, -1) + \
         (np.dot(np.imag(ps_mirror), up_sin_r)).reshape(1, -1)
 
+    # ── [RX 비교 기법] 파일럿 OFDM 심볼: 같은 TX IQI 를 거쳐 송신 (predistortion 없음) ──
+    if rx_comp == 1:
+        p_sym = gen_mapping(M, RX_PILOT_SYMB * N).reshape(RX_PILOT_SYMB, N)
+        pilot_all[i] = p_sym
+        p_ps = np.fft.ifft(p_sym).reshape(-1, 1)
+        L = RX_PILOT_SYMB * N * X
+        pilot_iq_out[:, i * L:(i + 1) * L] = \
+            np.dot(np.real(p_ps), up_cos_r).reshape(1, -1) + \
+            np.dot(np.imag(p_ps), up_sin_r).reshape(1, -1)
+
     # ── [조건화] BLSTM predistorter ──
     if blstm == 1:
         # 신호 채널: 훈련과 동일한 규약 (기저대역 I/Q 를 train input_std로 정규화)
@@ -434,6 +490,9 @@ for i_k in range(len(K_list)):
         n        = sgma        * base
         if blstm == 1:
             n_blstm  = sgma_blstm  * base
+        if rx_comp == 1:
+            # 파일럿은 데이터와 같은 하드웨어(같은 IQI)로 송신되므로 같은 잡음 분산(sgma) 사용
+            n_pilot = sgma * np.random.randn(1, pilot_iq_out.size)
 
         if ch_mode == 0:      # AWGN
             org_receive = org_IQ_out + n_org
@@ -468,6 +527,19 @@ for i_k in range(len(K_list)):
             if blstm == 1:
                 blstm_rev = (h * blstm_iq_out + n_blstm) / h
 
+        # ── [RX 비교 기법] 파일럿 수신 (데이터와 같은 채널 통계, 같은 완전 CSI 가정) ──
+        if rx_comp == 1:
+            Lp = pilot_iq_out.size
+            if ch_mode == 0:
+                pilot_rev = pilot_iq_out + n_pilot
+            elif ch_mode == 1:
+                h_p = (np.random.randn(1, Lp) + 1j * np.random.randn(1, Lp)) / np.sqrt(2)
+                pilot_rev = (h_p * pilot_iq_out + n_pilot) / h_p
+            else:
+                h_p = np.sqrt(k_0 / (1 + k_0)) * np.ones((1, Lp)) + \
+                    np.sqrt(1 / (1 + k_0)) * ((np.random.randn(1, Lp) + 1j * np.random.randn(1, Lp)) / np.sqrt(2))
+                pilot_rev = (h_p * pilot_iq_out + n_pilot) / h_p
+
         down_cos_r = cos_sampling(X, Fq, down_C, down_upsilon)
         down_sin_r = sin_sampling(X, Fq, down_C, down_upsilon)
         org_down_cos = cos_sampling(X, Fq, 0, 0)
@@ -486,6 +558,16 @@ for i_k in range(len(K_list)):
         if blstm == 1:
             blstm_fft_out = rx_chain(blstm_rev, down_cos_r, down_sin_r)
 
+        # ── [RX 비교 기법] 파일럿으로 (mu, nu) 추정 후 보상되지 않은 수신 신호(fft_out_r)를 보상 ──
+        rxc_txt = ""
+        if rx_comp == 1:
+            pilot_fft_out = rx_chain(pilot_rev, down_cos_r, down_sin_r).reshape(-1, RX_PILOT_SYMB, N)
+            mu_hat, nu_hat = rx_iqi_estimate(pilot_fft_out, pilot_all, N)
+            rxc_fft_out = rx_iqi_compensate(fft_out_r, mu_hat, nu_hat, N)
+            mse_rxc = np.mean(np.abs(b_all - rxc_fft_out.reshape(1, -1)) ** 2)
+            evm_rxc = calculate_evm(rxc_fft_out.reshape(1, -1), b_all)
+            rxc_txt = f", RX pilot comp MSE {mse_rxc:.5f}, EVM {evm_rxc[1]:.2f}%"
+
         mse_blstm_txt = ""
         if blstm == 1:
             mse_blstm = np.mean(np.abs(b_all - blstm_fft_out.reshape(1, -1)) ** 2)
@@ -500,8 +582,12 @@ for i_k in range(len(K_list)):
         mse_pred = np.mean(np.abs(b_all - pred_fft_out.reshape(1, -1)) ** 2)
         evm_pred = calculate_evm(pred_fft_out.reshape(1, -1), b_all)
         print(f"SNR {snr_now}dB: ideal MSE {mse_org:.5f}, EVM {evm_org[1]:.2f}%, IQ imbalance MSE {mse_iq:.5f}, EVM {evm_iq[1]:.2f}%, mirror MSE {mse_mirror:.5f}, EVM {evm_mirror[1]:.2f}%")
-        print(f"SNR {snr_now}dB: pred MSE {mse_pred:.5f}, EVM {evm_pred[1]:.2f}%{mse_blstm_txt}")
-            
+        print(f"SNR {snr_now}dB: pred MSE {mse_pred:.5f}, EVM {evm_pred[1]:.2f}%{mse_blstm_txt}{rxc_txt}")
+        if rx_comp == 1:
+            rxc_ber[i_k, m] = ber_call_qpsk(hard_decision(rxc_fft_out.reshape(1, -1), M), b_all, M)
+            print(f"rx pilot comp BER:{rxc_ber[i_k, m]:.5f} (Eb/N0 {snr_now} dB 기준"
+                + (f", 그림에서는 +{RX_OVERHEAD_DB:.2f} dB 이동)" if pilot_overhead == 1 else ")"))
+
         org_ber[i_k, m] = ber_call_qpsk(hard_decision(org_fft_out.reshape(1, -1), M), b_all, M)
         ber[i_k, m] = ber_call_qpsk(hard_decision(fft_out_r.reshape(1, -1), M), b_all, M)
         pred_ber[i_k, m] = ber_call_qpsk(hard_decision(pred_fft_out.reshape(1, -1), M), b_all, M)
@@ -518,6 +604,7 @@ for i_k in range(len(K_list)):
             savemat(os.path.join(BASE_DIR, f'variable/constellation.mat'), {
                 'iq':      fft_out_r.reshape(-1),
                 'pred':    pred_fft_out.reshape(-1),
+                'rxcomp':  rxc_fft_out.reshape(-1) if rx_comp == 1 else 0,
                 'ref':     b_all.reshape(-1),
                 'snr':     CONST_SNR,
                 'epsilon': epsilon,
@@ -542,11 +629,20 @@ if constel != 1:
     if blstm == 1:
         plt.semilogy(SNR, blstm_ber[4], 'm', label='BLSTM (conditioned)')
     plt.semilogy(SNR, mirror_ber[4], 'c-x', label='Conv Freq-Domain Pre-dist')
+    if rx_comp == 1:
+        plt.semilogy(SNR + (RX_OVERHEAD_DB if pilot_overhead == 1 else 0), rxc_ber[4], 'm--s',
+            label='RX pilot-based comp' + (' (incl. pilot overhead)' if pilot_overhead == 1 else ''))
     plt.xlabel('SNR (dB)')
     plt.ylabel('BER')
     plt.axis([0, 20, 1e-5, 1])
     plt.grid(True, which='both')
     plt.legend()
     plt.savefig('BER_plot_cond.png')
+    os.makedirs(os.path.join(BASE_DIR, 'variable'), exist_ok=True)
+    savemat(os.path.join(BASE_DIR, 'variable/ber_results.mat'), {
+        'SNR': SNR, 'K_list': np.array(K_list), 'org_ber': org_ber, 'ber': ber,
+        'pred_ber': pred_ber, 'mirror_ber': mirror_ber,
+        'rxc_ber': rxc_ber if rx_comp == 1 else 0,
+        'rx_overhead_db': RX_OVERHEAD_DB if pilot_overhead == 1 else 0,'rx_pilot_symb': RX_PILOT_SYMB})
 else:
     plt.plot(np.real(fft_out_r), np.imag(fft_out_r), 'b.');
