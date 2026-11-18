@@ -2,7 +2,6 @@
 """
 Two-state RF-feedback TX I/Q imbalance estimation and predistortion with 3GPP NR polar coding
 ==============================================================================================
-Base: run_iq_imbal_two_state.py (same OFDM / carrier-sampling chain, feedback model, predistorter).
 No LO frequency offset between the TX LO and the feedback LO is assumed.
 
 Feedback observation (state k = 0, 1):
@@ -10,20 +9,22 @@ Feedback observation (state k = 0, 1):
   - state 0: psi_0 = 0, gain g;  state 1: psi_1 = psi (FB-LO phase change), gain g * kappa
   - actual psi = STATE_PSI_NOM + STATE_PSI_ERR, kappa = STATE_GAIN_DB  (both unknown to 'prop')
 
-Estimation / compensation methods
-  'prop'  : proposed two-state closed form (det -> kappa, trace -> cos(psi), C -> eps_T, phi_T),
-            data-aided LS on the transmitted OFDM data, time-domain predistorter M^-1 (eq. (14)).
-  'huang' : X. Huang, Y. J. Guo, J. A. Zhang, IEEE TWC 2016, eqs. (17)-(25):
-            dedicated training A(f), B(f) in both states, RX-image removal with an ASSUMED
-            phase-shifter response P (HUANG_P_*, set arbitrarily), per-subcarrier beta_t(f),
-            frequency-domain pre-compensation X(f) - beta_t(f) X*(-f).
-  'cf'    : single-state closed form of the previous paper (eqs. (9)-(11)).
-  'q90'   : 0/90 deg closed form (optional).
-  link references: 'ideal' (no IQI), 'uncomp' (no compensation), 'mirror' (fixed parameters, optional).
+Schemes
+  'prop'       : proposed two-state closed form (det -> kappa, trace -> cos(psi), C -> eps_T, phi_T),
+                 data-aided LS on the transmitted OFDM data, time-domain predistorter M^-1 (eq. (14)).
+  'huang'      : X. Huang, Y. J. Guo, J. A. Zhang, IEEE TWC 2016, eqs. (17)-(25): dedicated training
+                 A(f), B(f) in both states, RX-image removal with an ASSUMED phase-shifter response P
+                 (HUANG_P_*, set arbitrarily), per-subcarrier beta_t(f), frequency-domain
+                 pre-compensation X(f) - beta_t(f) X*(-f).
+  'huang_flat' : same as 'huang', but beta_t(f) is averaged over the subcarriers (flat I/Q imbalance
+                 is assumed, as in 'prop'), so that both methods use the same model.
+  'uncomp'     : no compensation.          'ideal' : no I/Q imbalance (reference).
 
 Channel coding: 3GPP TS 38.212 polar code for UCI (CRC11, n_max = 10, sub-block interleaver,
   shortening / puncturing / repetition, coded-bit interleaver), CRC-aided SCL decoding (numba).
 Modulation: TS 38.211 QPSK / 16QAM / 64QAM mapping, max-log LLR demapping.
+Channels: AWGN, and i.i.d. Rayleigh fading per resource element (subcarrier x OFDM symbol) with
+  perfect CSI at the receiver (zero-forcing equalization, LLRs weighted by |H|^2).
 
 Metrics
   Experiment 1 (estimation): MSE of eps_T and phi_T, CRB of the two-state model, residual image-to-signal
@@ -71,7 +72,7 @@ THETA0_DEG = None               # common phase of state 0 [deg]; None = U(0, 360
 
 # ---- two-state switching (actual values; unknown to the proposed method)
 STATE_PSI_NOM = 90.0            # nominal FB-LO phase change between the states [deg]
-STATE_PSI_ERR = 5.0             # actual - nominal [deg]
+STATE_PSI_ERR = 20.0            # actual - nominal [deg]
 STATE_GAIN_DB = 0.5             # gain difference between the states [dB]
 
 # ---- Huang et al.: parameters that must be known in advance (set arbitrarily here)
@@ -81,9 +82,9 @@ HUANG_TRAIN_REP = 7             # repetitions of A(f) and B(f) per state (2 x 2 
                                 #  equal to the 2 x 14 data symbols used by 'prop')
 
 # ---- methods
-EST_METHODS = ['prop', 'huang', 'cf']                      # available: 'prop', 'huang', 'cf', 'q90'
-LINK_SCHEMES = ['ideal', 'uncomp', 'prop', 'huang', 'cf']  # + 'mirror', 'q90'
-MIRROR_EPS, MIRROR_PHI = 0.35, 3.5                         # fixed a-priori parameters of the mirror method
+EST_METHODS = ['prop', 'huang', 'huang_flat']
+LINK_SCHEMES = ['ideal', 'uncomp', 'prop', 'huang', 'huang_flat']   # 'ideal': no-I/Q-imbalance reference
+HUANG_SET = ('huang', 'huang_flat')
 
 # ---- polar code (3GPP UCI)
 POLAR_A = 200                   # payload bits per codeword (20 <= A < 360)
@@ -101,9 +102,13 @@ MSE_GERR_LIST = [0.0, 0.1, 0.2, 0.5, 1.0, 2.0]  # state gain difference [dB] (ph
 
 # ---- experiment 2: coded link
 RUN_LINK = True
-MOD_LIST = [4, 16]              # 64 also supported
-EBN0_LIST = {4: np.arange(0, 13, 1), 16: np.arange(2, 21, 1), 64: np.arange(6, 29, 1)}  # per info bit [dB]
-CHANNELS = [('AWGN', 0, None), ('Rician_K8', 2, 8)]  # (name, mode, K): 0 AWGN, 1 Rayleigh, 2 Rician
+MOD_LIST = [4, 16, 64]
+CHANNELS = ['AWGN', 'Rayleigh']
+EBN0_STEP = 0.5                 # [dB]
+EBN0_RANGE = {                  # (first, last) Eb/N0 per information bit [dB] for (modulation, channel)
+    (4, 'AWGN'): (0.0, 5.0), (4, 'Rayleigh'): (2.0, 8.0),
+    (16, 'AWGN'): (3.0, 10.0), (16, 'Rayleigh'): (4.0, 12.5),
+    (64, 'AWGN'): (5.5, 14.0), (64, 'Rayleigh'): (8.0, 17.0)}
 FB_SNR_LINK = 40.0              # feedback SNR used for estimation in the link
 MAX_FRAMES = {4: 1500, 16: 1000, 64: 700}   # max slots per (modulation, channel):
                                 #  ~1e5 codewords per point -> BLER down to ~1e-3 with ~100 errors
@@ -116,11 +121,10 @@ ZERO_STOP_CW = 20000            # a point with 0 block errors after this many co
 RX_GAIN_EQ = True               # receiver knows the end-to-end desired-signal gain per subcarrier
                                 #  (perfect channel estimation); only the image interference remains
 
-LABELS = {'prop': 'Proposed (unknown $\\psi$, $\\kappa$)', 'huang': 'Huang et al. (assumed P)',
-          'cf': 'Single-state CF [prev.]', 'q90': '0/90 closed form', 'ideal': 'No I/Q imbalance',
-          'uncomp': 'Uncompensated', 'mirror': 'Mirror image [12]'}
-STYLE = {'prop': 'r-o', 'huang': 'b-s', 'cf': 'm:d', 'q90': 'g--^', 'ideal': 'k-', 'uncomp': 'c--',
-         'mirror': 'y-x'}
+LABELS = {'prop': 'Proposed (unknown $\\psi$, $\\kappa$)', 'huang': 'Huang et al. (assumed P, per subcarrier)',
+          'huang_flat': 'Huang et al. (assumed P, flat)', 'ideal': 'No I/Q imbalance', 'uncomp': 'Uncompensated'}
+STYLE = {'prop': 'r-o', 'huang': 'b-s', 'huang_flat': 'g--^', 'ideal': 'k-', 'uncomp': 'c--'}
+N0_UNIT = 4.0 * N / X                        # noise variance per subcarrier of the unit-variance RF noise
 D2R = np.pi / 180
 MIRROR_IDX = (N - np.arange(N)) % N          # index of -f for each subcarrier
 
@@ -550,7 +554,7 @@ def random_slot(M):
 
 
 # ============================================================
-# Carrier-level chain (from the base script)
+# Carrier-level chain
 # ============================================================
 def cos_sampling(Xs, F, C, upsilon, theta_deg=0.0):
     t = np.arange(Xs)
@@ -578,19 +582,6 @@ def iq_predistort(I, Q, epsilon, phi):
     h = np.deg2rad(phi) / 2.0
     c, s, cp = np.cos(h), np.sin(h), np.cos(2.0 * h)
     return (c * I + s * Q) / ((1.0 + epsilon / 2.0) * cp), (s * I + c * Q) / ((1.0 - epsilon / 2.0) * cp)
-
-
-def mirror_coeffs(epsilon_c, phi_c_deg):
-    epsilon = epsilon_c / 2
-    theta = -phi_c_deg * np.pi / 360
-    t1 = 0.5 * (np.exp(1j * theta) / (1 + epsilon) + np.exp(-1j * theta) / (1 - epsilon))
-    t2 = 0.5 * (np.exp(-1j * theta) / (1 + epsilon) - np.exp(1j * theta) / (1 - epsilon))
-    return t1, t2
-
-
-def mirror_predistorter(sp, epsilon_c, phi_c_deg):
-    t1, t2 = mirror_coeffs(epsilon_c, phi_c_deg)
-    return t1 * sp + t2 * np.conj(sp[:, MIRROR_IDX])
 
 
 def feedback(ps, eT, pT, eR, pR, g, theta0, psi=0.0, gs=1.0, snr_db=np.inf):
@@ -660,36 +651,6 @@ def est_proposed(A0, A1):
     return 2 * (r - 1) / (r + 1), np.rad2deg(np.arctan(C[1, 1])), np.rad2deg(np.arctan2(spsi, cpsi))
 
 
-def est_q90(A0, A1):
-    """0/90 deg closed form (state phase exactly 90 deg, equal state gains)."""
-    a1, b1 = A0[0]
-    a2, b2 = A1[0]
-    r = np.hypot(a1, a2) / np.hypot(b1, b2)
-    phi = np.rad2deg(np.arctan2(-a2, a1) + np.arctan2(-b1, b2))
-    return 2 * (r - 1) / (r + 1), (phi + 180) % 360 - 180
-
-
-def IQ_est(pilot0, pilot1, power_rel=1e-4, eq_rel=1e-2):
-    """Closed form of the previous paper (eqs. (9)-(11)); valid only if FB IQI = TX IQI, theta0 = 0, g = 1.
-    Thresholds are relative to the signal power (same values as the base script for its signal level)."""
-    I, Q = np.real(pilot0), np.imag(pilot0)
-    If, Qf = np.real(pilot1), np.imag(pilot1)
-    A, D, K = I ** 2 + Q ** 2, I ** 2 - Q ** 2, I * If - Q * Qf
-    Delta = 4 * I ** 2 * Q ** 2 + D * K
-    scale = np.mean(A)
-    use = (A > power_rel * scale) & (np.abs(np.abs(I) - np.abs(Q)) >= eq_rel * np.sqrt(scale)) & (Delta >= 0)
-    if not np.any(use):
-        return np.nan, np.nan
-    eps_T = np.mean((-2 * A[use] + 2 * np.sqrt(Delta[use])) / D[use])
-    h = eps_T / 2.0
-    Iu, Qu, Ifu, Qfu = I[use], Q[use], If[use], Qf[use]
-    big = np.abs(Qu) >= np.abs(Iu)
-    with np.errstate(all='ignore'):
-        s = np.where(big, (Iu * (1 + h) ** 2 - Ifu) / (Qu * (1 - h ** 2)), (Qu * (1 - h) ** 2 - Qfu) / (Iu * (1 - h ** 2)))
-    s = s[np.abs(s) <= 1.0]
-    return (eps_T, np.rad2deg(np.mean(np.arcsin(s)))) if s.size else (eps_T, np.nan)
-
-
 def beta_to_param(beta, iters=30):
     """beta = nu/mu of the TX model y = mu x + nu x*  ->  (eps, phi[deg]); vectorized."""
     beta = np.asarray(beta, dtype=complex)
@@ -745,33 +706,29 @@ def measure_and_estimate(methods, eT, pT, fb_snr, psi_err, gain_db, M_ref):
     eR, pR, th0 = draw_feedback_path()
     psi_true, gs_true = STATE_PSI_NOM + psi_err, 10 ** (gain_db / 20)
     est, fail, aux = {}, {}, {'eR': eR, 'pR': pR, 'th0': th0, 'psi': psi_true, 'gs': gs_true}
-    if any(m in ('prop', 'cf', 'q90') for m in methods):
-        r0 = np.fft.ifft(random_slot(M_ref)).ravel()
-        r1 = np.fft.ifft(random_slot(M_ref)).ravel()
-        f0 = feedback(r0, eT, pT, eR, pR, FB_GAIN, th0, 0.0, 1.0, fb_snr)
-        f1 = feedback(r1, eT, pT, eR, pR, FB_GAIN, th0, psi_true, gs_true, fb_snr)
-        aux.update(r0=r0, r1=r1)
-        A0, A1 = fit2x2(r0, f0), fit2x2(r1, f1)
-    for m in methods:
-        with np.errstate(all='ignore'):
-            if m == 'prop':
-                e, p, ph = est_proposed(A0, A1)
-                aux['psi_hat'] = ph
-                est[m], fail[m] = safe(e, p)
-            elif m == 'q90':
-                est[m], fail[m] = safe(*est_q90(A0, A1))
-            elif m == 'cf':
-                est[m], fail[m] = safe(*IQ_est(r0, f0))
-            elif m == 'huang':
-                beta = est_huang(eT, pT, eR, pR, th0, psi_true, gs_true, fb_snr)
-                est[m], fail[m] = beta, not np.any(beta)
+    with np.errstate(all='ignore'):
+        if 'prop' in methods:
+            r0 = np.fft.ifft(random_slot(M_ref)).ravel()
+            r1 = np.fft.ifft(random_slot(M_ref)).ravel()
+            f0 = feedback(r0, eT, pT, eR, pR, FB_GAIN, th0, 0.0, 1.0, fb_snr)
+            f1 = feedback(r1, eT, pT, eR, pR, FB_GAIN, th0, psi_true, gs_true, fb_snr)
+            aux.update(r0=r0, r1=r1)
+            e, p, aux['psi_hat'] = est_proposed(fit2x2(r0, f0), fit2x2(r1, f1))
+            est['prop'], fail['prop'] = safe(e, p)
+        if any(m in HUANG_SET for m in methods):
+            beta = est_huang(eT, pT, eR, pR, th0, psi_true, gs_true, fb_snr)
+            bad = not np.any(beta)
+            if 'huang' in methods:
+                est['huang'], fail['huang'] = beta, bad
+            if 'huang_flat' in methods:        # flat model: one beta for all subcarriers
+                est['huang_flat'], fail['huang_flat'] = np.full(N, np.mean(np.delete(beta, [0, N // 2]))), bad
     return est, fail, aux
 
 
 def isr_of(method, est, eT, pT):
     """Exact residual image-to-signal ratio (linear) after compensation."""
     mu, nu = widely_linear(tx_matrix(eT, pT))
-    if method == 'huang':
+    if method in HUANG_SET:
         b = est
         return np.mean(np.abs(nu - mu * b) ** 2 / np.abs(mu - nu * np.conj(b[MIRROR_IDX])) ** 2)
     if method == 'uncomp':
@@ -782,7 +739,7 @@ def isr_of(method, est, eT, pT):
 
 def param_errors(method, est, eT, pT):
     """Squared errors of (eps, phi[deg]); Huang: averaged over subcarriers of the per-subcarrier conversion."""
-    if method == 'huang':
+    if method in HUANG_SET:
         e, p = beta_to_param(np.delete(est, [0, N // 2]))
         return np.mean((e - eT) ** 2), np.mean((p - pT) ** 2)
     return (est[0] - eT) ** 2, (est[1] - pT) ** 2
@@ -822,14 +779,12 @@ def crb_two_state(eT, pT, aux, fb_snr):
 # Transmitter / receiver of the link
 # ============================================================
 def tx_signal(scheme, sp, eT, pT, est):
-    """Slot sp (SYMB, N) -> real RF samples (1, SLOT*X) for each compensation scheme."""
-    if scheme == 'mirror':
-        sp = mirror_predistorter(sp, MIRROR_EPS, MIRROR_PHI)
-    elif scheme == 'huang':
-        sp = sp - est['huang'][None, :] * np.conj(sp[:, MIRROR_IDX])
+    """Slot sp (SYMB, N) -> real RF samples (1, SLOT*X) for each scheme."""
+    if scheme in HUANG_SET:
+        sp = sp - est[scheme][None, :] * np.conj(sp[:, MIRROR_IDX])
     ps = np.fft.ifft(sp).reshape(-1, 1)
     I, Q = np.real(ps), np.imag(ps)
-    if scheme in ('prop', 'cf', 'q90'):
+    if scheme == 'prop':
         I, Q = iq_predistort(I, Q, *est[scheme])
     if scheme == 'ideal':
         return modulate(I, Q, 0, 0).reshape(1, -1)
@@ -852,11 +807,8 @@ def desired_gain(scheme, est, eT, pT):
     mu, nu = widely_linear(tx_matrix(eT, pT))
     if scheme == 'uncomp':
         return np.full(N, mu, complex)
-    if scheme == 'huang':
-        return mu - nu * np.conj(est['huang'][MIRROR_IDX])
-    if scheme == 'mirror':
-        t1, t2 = mirror_coeffs(MIRROR_EPS, MIRROR_PHI)
-        return np.full(N, mu * t1 + nu * np.conj(t2), complex)
+    if scheme in HUANG_SET:
+        return mu - nu * np.conj(est[scheme][MIRROR_IDX])
     return np.full(N, widely_linear(tx_matrix(eT, pT) @ pd_matrix(*est[scheme]))[0], complex)
 
 
@@ -895,17 +847,20 @@ def sanity_checks(code):
     print('[check] polar noiseless decode:', bool(np.array_equal(ah, a) and ok.all()))
     for M in (4, 16, 64):
         b = np.random.randint(0, 2, 6000 * int(np.log2(M)))
-        s = qam_map(b, M)
-        llr = qam_llr(s, M, np.full(s.size, 0.01))
-        print(f'[check] {M}-QAM: mean |s|^2 = {np.mean(np.abs(s) ** 2):.3f}, '
+        sy = qam_map(b, M)
+        llr = qam_llr(sy, M, np.full(sy.size, 0.01))
+        print(f'[check] {M}-QAM: mean |s|^2 = {np.mean(np.abs(sy) ** 2):.3f}, '
               f'noiseless demap errors = {int(np.sum((llr < 0) != b))}')
+    w = rx_chain(np.random.randn(1, SLOT * X))
+    print(f'[check] noise variance per subcarrier: measured {np.mean(np.abs(w) ** 2):.1f}, N0_UNIT {N0_UNIT:.1f}')
     eT, pT = 0.3, 4.0
-    est, fail, aux = measure_and_estimate(['prop', 'huang', 'cf', 'q90'], eT, pT, np.inf, 7.0, 0.9, 16)
-    e_h, p_h = beta_to_param(np.delete(est['huang'], [0, N // 2]))
+    methods = ['prop', 'huang', 'huang_flat']
+    est, fail, aux = measure_and_estimate(methods, eT, pT, np.inf, 7.0, 0.9, 16)
+    e_h, p_h = beta_to_param(est['huang_flat'][1])
     print(f'[check] noiseless, TX ({eT}, {pT}), state error 7 deg / 0.9 dB, Huang assumes '
           f'{HUANG_P_PHASE_DEG:g} deg / {HUANG_P_GAIN_DB:g} dB:')
     print(f'        prop {np.round(est["prop"], 6)} (psi_hat {aux["psi_hat"]:.3f} deg, true {aux["psi"]:.1f}) | '
-          f'huang mean ({np.mean(e_h):.4f}, {np.mean(p_h):.4f}) | cf {np.round(est["cf"], 4)} | q90 {np.round(est["q90"], 4)}')
+          f'huang_flat ({e_h:.4f}, {p_h:.4f})')
     _ps = (HUANG_P_PHASE_DEG, HUANG_P_GAIN_DB)
     globals()['HUANG_P_PHASE_DEG'], globals()['HUANG_P_GAIN_DB'] = STATE_PSI_NOM + 7.0, 0.9
     est2, _, _ = measure_and_estimate(['huang'], eT, pT, np.inf, 7.0, 0.9, 16)
@@ -914,7 +869,7 @@ def sanity_checks(code):
     print(f'        huang with the true P: ({np.mean(e_h):.6f}, {np.mean(p_h):.6f}), '
           f'ISR {10 * np.log10(isr_of("huang", est2["huang"], eT, pT)):.1f} dB')
     print('[check] residual ISR [dB]: ' + ', '.join(
-        f'{m} {10 * np.log10(isr_of(m, est[m], eT, pT) + 1e-30):.1f}' for m in ('prop', 'huang', 'cf')) +
+        f'{m} {10 * np.log10(isr_of(m, est[m], eT, pT) + 1e-30):.1f}' for m in methods) +
         f', uncomp {10 * np.log10(isr_of("uncomp", None, eT, pT)):.1f}')
 
 
@@ -1004,10 +959,10 @@ def run_mse(out_dir):
 def run_link(out_dir, code):
     est_methods = [m for m in EST_METHODS if m in LINK_SCHEMES]
     for m in LINK_SCHEMES:
-        if m in ('prop', 'huang', 'cf', 'q90') and m not in est_methods:
+        if m in ('prop',) + HUANG_SET and m not in est_methods:
             est_methods.append(m)
     save = {'schemes': np.array(LINK_SCHEMES, dtype=object), 'mod_list': np.array(MOD_LIST),
-            'channels': np.array([c[0] for c in CHANNELS], dtype=object), 'fb_snr_link': FB_SNR_LINK,
+            'channels': np.array(CHANNELS, dtype=object), 'fb_snr_link': FB_SNR_LINK,
             'state_psi_nom': STATE_PSI_NOM, 'state_psi_err': STATE_PSI_ERR, 'state_gain_db': STATE_GAIN_DB,
             'huang_p_phase_deg': HUANG_P_PHASE_DEG, 'huang_p_gain_db': HUANG_P_GAIN_DB,
             'polar_A': code.A, 'polar_K': code.K, 'polar_E': code.E, 'polar_N': code.N,
@@ -1017,13 +972,16 @@ def run_link(out_dir, code):
     for M in MOD_LIST:
         k = int(np.log2(M))
         n_cw = SLOT * k // code.E
-        ebn0 = np.asarray(EBN0_LIST[M], float)
-        for ch_name, ch_mode, Kf in CHANNELS:
+        for ch_name in CHANNELS:
             tag = f'{M}QAM_{ch_name}'
+            lo, hi = EBN0_RANGE[(M, ch_name)]
+            ebn0 = np.arange(lo, hi + EBN0_STEP / 2, EBN0_STEP)
+            fading = ch_name.lower().startswith('rayleigh')
             S = {s: {key: np.zeros(ebn0.size) for key in
                      ('bit_err', 'blk_err', 'n_cw', 'raw_err', 'err_pow')} for s in LINK_SCHEMES}
             active = {s: np.ones(ebn0.size, bool) for s in LINK_SCHEMES}
-            n_raw, ref_pow, frames = 0, 0.0, 0
+            n_raw, frames = 0, 0
+            ref_pow = np.zeros(ebn0.size)
             est_stat = {m: [] for m in est_methods}
             t0 = time.time()
 
@@ -1037,7 +995,7 @@ def run_link(out_dir, code):
                     d[f'bler_{s}_{tag}'] = bler
                     d[f'ber_{s}_{tag}'] = S[s]['bit_err'] / (ncw * code.A)
                     d[f'rawber_{s}_{tag}'] = S[s]['raw_err'] / max(n_raw, 1)
-                    d[f'evm_{s}_{tag}'] = 100 * np.sqrt(S[s]['err_pow'] / max(ref_pow, 1e-30))
+                    d[f'evm_{s}_{tag}'] = 100 * np.sqrt(S[s]['err_pow'] / np.maximum(ref_pow, 1e-30))
                     d[f'thr_{s}_{tag}'] = (1 - bler) * R * k
                     d[f'ncw_{s}_{tag}'] = S[s]['n_cw']
                     d[f'nblkerr_{s}_{tag}'] = S[s]['blk_err']
@@ -1066,23 +1024,23 @@ def run_link(out_dir, code):
                     pwr[s] = np.mean(tx ** 2)
                     cg[s] = desired_gain(s, est, eT, pT)[None, :]
                     sig[s] = rx_chain(tx) / cg[s]
-                ref_pow += np.sum(np.abs(sp) ** 2)
                 n_raw += bits.size
-                Ltx = SLOT * X
                 for i, eb in enumerate(ebn0):
-                    base = np.random.randn(1, Ltx)
-                    if ch_mode == 0:
-                        W = rx_chain(base)
+                    # unit noise per subcarrier (equivalent to white RF noise through rx_chain)
+                    W = np.sqrt(N0_UNIT / 2) * (np.random.randn(SYMB, N) + 1j * np.random.randn(SYMB, N))
+                    if fading:      # i.i.d. Rayleigh per resource element, perfect CSI, zero forcing
+                        H = (np.random.randn(SYMB, N) + 1j * np.random.randn(SYMB, N)) / np.sqrt(2)
+                        W = W / H
+                        h2 = np.abs(H) ** 2
                     else:
-                        g = (np.random.randn(1, Ltx) + 1j * np.random.randn(1, Ltx)) / np.sqrt(2)
-                        h = g if ch_mode == 1 else np.sqrt(Kf / (1 + Kf)) + np.sqrt(1 / (1 + Kf)) * g
-                        W = rx_chain(base / h)            # zero-forcing with perfect CSI (base script model)
-                    n0_unit = np.mean(np.abs(W) ** 2, axis=1)   # per OFDM symbol
+                        h2 = np.ones((SYMB, N))
+                    ref_pow[i] += np.sum(h2 * np.abs(sp) ** 2)
                     for s in LINK_SCHEMES:
                         sg2 = X * pwr[s] / (2 * R * k * 10 ** (eb / 10))
                         Y = sig[s] + np.sqrt(sg2) * W / cg[s]
-                        S[s]['err_pow'][i] += np.sum(np.abs(Y - sp) ** 2)
-                        llr = qam_llr(Y.ravel(), M, (sg2 * n0_unit[:, None] / np.abs(cg[s]) ** 2).ravel())
+                        # EVM referred to the receiver input (error weighted by |H|^2)
+                        S[s]['err_pow'][i] += np.sum(h2 * np.abs(Y - sp) ** 2)
+                        llr = qam_llr(Y.ravel(), M, (sg2 * N0_UNIT / (h2 * np.abs(cg[s]) ** 2)).ravel())
                         S[s]['raw_err'][i] += np.sum((llr < 0) != bits)
                         if active[s][i]:
                             ah, _ = code.decode(llr[:n_cw * code.E].reshape(n_cw, code.E))
@@ -1106,7 +1064,7 @@ def run_link(out_dir, code):
             print(f'[link {tag}] done: {frames} slots, {time.time() - t0:.0f} s')
             for m in est_methods:
                 v = np.mean(est_stat[m], 0)
-                print(f'    estimation {m:5s}: MSE eps {v[0]:.2e}, MSE phi {v[1]:.2e} deg^2, ISR {10 * np.log10(v[2]):.1f} dB')
+                print(f'    estimation {m:10s}: MSE eps {v[0]:.2e}, MSE phi {v[1]:.2e} deg^2, ISR {10 * np.log10(v[2]):.1f} dB')
             for i, eb in enumerate(ebn0):
                 print(f'    Eb/N0 {eb:4.1f} dB: ' + ' | '.join(
                     f'{s} BLER {save[f"bler_{s}_{tag}"][i]:.2e} EVM {save[f"evm_{s}_{tag}"][i]:.2f}%'
@@ -1120,7 +1078,7 @@ def run_link(out_dir, code):
                 ax[0, 2].semilogy(ebn0, np.maximum(save[f'rawber_{s}_{tag}'], 1e-8), STYLE[s], **kw)
                 ax[1, 0].plot(ebn0, save[f'evm_{s}_{tag}'], STYLE[s], **kw)
                 ax[1, 1].plot(ebn0, save[f'thr_{s}_{tag}'], STYLE[s], **kw)
-            if ch_mode == 0:
+            if not fading:
                 ax[0, 2].semilogy(ebn0, save[f'theory_raw_ber_{tag}'], 'k:', lw=1, label='Theory (AWGN)')
             for a_, yl in zip(ax.ravel()[:5], ['BLER', 'Coded BER', 'Uncoded (raw) BER', 'EVM [%]',
                                               'Throughput [info bits / symbol]']):
