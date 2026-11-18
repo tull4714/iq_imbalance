@@ -48,6 +48,59 @@ _NB_CACHE = os.path.isfile(globals().get('__file__', ''))   # numba cache only w
 
 
 # ============================================================
+# Variables saved in the .mat files
+# ============================================================
+# ---- two_state_polar_mse.mat (experiment 1) -----------------------------------------------------
+# methods              : estimation methods = column order of the 2-D arrays below (prop, huang, huang_flat)
+# trials, mse_mod      : Monte Carlo trials per point, modulation order of the data used for estimation
+# state_psi_nom        : nominal phase change between the two states [deg]
+# state_psi_err        : actual - nominal phase change used in the 'snr' sweep [deg]
+# state_gain_db        : gain ratio kappa between the states used in the 'snr' sweep [dB]
+# huang_p_phase_deg, huang_p_gain_db : phase-shifter response ASSUMED by Huang's method
+# huang_train_rep      : repetitions of the training symbols A(f), B(f) per state
+# mse_err_snr, fb_gain : feedback SNRs of the 'perr'/'gerr' sweeps [dB], common feedback gain g
+# Sweeps, <tag> = snr      (x: feedback SNR [dB];                state error = state_psi_err, state_gain_db)
+#                 perr<S>  (x: state phase error psi - 90 [deg]; gain ratio 0 dB, feedback SNR <S> dB)
+#                 gerr<S>  (x: state gain ratio kappa [dB];      phase error 0,   feedback SNR <S> dB)
+#                 with <S> in mse_err_snr, e.g. perr20, perr40, gerr20, gerr40
+# <tag>_x              : x axis of the sweep
+# <tag>_mse_eps        : MSE of eps_T                      (n_x by n_methods)
+# <tag>_mse_phi        : MSE of phi_T [deg^2]              (n_x by n_methods)
+# <tag>_isr_db         : residual image-to-signal ratio after compensation [dB] (n_x by n_methods)
+# <tag>_res_evm        : noise-free residual EVM after compensation [%]         (n_x by n_methods)
+# <tag>_fail_rate      : fraction of failed / out-of-domain estimates           (n_x by n_methods)
+# <tag>_crb_eps, <tag>_crb_phi : CRB of eps_T and phi_T [deg^2] for the two-state model (n_x)
+# <tag>_isr_uncomp_db  : image-to-signal ratio without compensation [dB]        (n_x)
+# <tag>_mse_psi_prop   : MSE of the phase change psi estimated by 'prop' [deg^2] (n_x)
+#
+# ---- two_state_polar_link.mat (experiment 2) ----------------------------------------------------
+# schemes, mod_list, channels : link schemes, modulation orders, channel names
+# fb_snr_link          : feedback SNR used for the estimation in the link [dB]
+# state_psi_nom, state_psi_err, state_gain_db, huang_p_phase_deg, huang_p_gain_db : as above
+# polar_A, polar_K, polar_E, polar_N : payload bits, K = A + CRC bits, rate-matched length, mother code length
+# polar_mode, polar_rate, polar_list : rate matching (shortening/puncturing/repetition), A/E, SCL list size
+# target_block_err     : block errors after which a (scheme, Eb/N0) point stops being decoded
+# min_frames           : minimum slots (I/Q imbalance realizations) decoded for every point
+# rx_gain_eq           : 1 = receiver equalizes the desired-signal gain left by the compensation
+# For each <tag> = <M>QAM_<channel> (e.g. 16QAM_Rayleigh), vectors over the Eb/N0 points:
+# ebn0_<tag>           : Eb/N0 per information bit [dB]
+# esn0_<tag>           : Es/N0 per modulation symbol [dB] = ebn0 + 10 log10(rate * log2 M)
+# frames_<tag>, max_frames_<tag> : slots actually simulated, slot limit
+# theory_raw_ber_<tag> : theoretical uncoded BER of M-QAM in AWGN (valid for the AWGN channel only)
+# For each scheme <s> (ideal, uncomp, prop, huang, huang_flat):
+# bler_<s>_<tag>       : block error rate = nblkerr / ncw
+# ber_<s>_<tag>        : bit error rate of the payload bits after decoding
+# rawber_<s>_<tag>     : uncoded bit error rate (hard decision before decoding, all slots)
+# evm_<s>_<tag>        : EVM at the receiver including noise [%] (Rayleigh: error weighted by |H|^2)
+# thr_<s>_<tag>        : normalized throughput (1 - BLER) * rate * log2 M [information bits / symbol]
+# ncw_<s>_<tag>        : number of decoded codewords  (use with nblkerr for confidence intervals)
+# nblkerr_<s>_<tag>    : number of block errors
+# For each estimation method <m> (prop, huang, huang_flat), scalars averaged over the slots:
+# est_mse_eps_<m>_<tag>, est_mse_phi_<m>_<tag> : MSE of eps_T and phi_T [deg^2] in the link
+# est_isr_db_<m>_<tag> : residual image-to-signal ratio in the link [dB]
+
+
+# ============================================================
 # Configuration
 # ============================================================
 SEED = 2026
@@ -95,10 +148,10 @@ POLAR_LIST = 8                  # CA-SCL list size
 RUN_MSE = True
 MSE_MOD = 16                    # modulation of the data used by the data-aided estimators
 MSE_TRIALS = 300
-MSE_FB_SNR = [0, 10, 20, 30, 40, 50, 60]
-MSE_ERR_SNR = 40.0              # feedback SNR for the state-error sweeps
-MSE_PERR_LIST = [0, 1, 2, 5, 10, 20, 30, 45]    # state phase error [deg] (gain difference 0 dB)
-MSE_GERR_LIST = [0.0, 0.1, 0.2, 0.5, 1.0, 2.0]  # state gain difference [dB] (phase error 0)
+MSE_FB_SNR = list(range(0, 41, 2))                          # feedback SNR sweep [dB]
+MSE_ERR_SNR = [20.0, 40.0]                                  # feedback SNRs of the state-mismatch sweeps [dB]
+MSE_PERR_LIST = list(range(0, 21))                          # state phase error psi - 90 [deg] (gain ratio 0 dB)
+MSE_GERR_LIST = [round(0.1 * i, 1) for i in range(0, 21)]   # state gain ratio kappa [dB] (phase error 0)
 
 # ---- experiment 2: coded link
 RUN_LINK = True
@@ -896,13 +949,17 @@ def mse_point(fb_snr, psi_err, gain_db, trials):
 
 
 def run_mse(out_dir):
-    sweeps = [('snr', MSE_FB_SNR, lambda v: (v, STATE_PSI_ERR, STATE_GAIN_DB), 'Feedback SNR [dB]'),
-              ('perr', MSE_PERR_LIST, lambda v: (MSE_ERR_SNR, v, 0.0), 'State phase error [deg]'),
-              ('gerr', MSE_GERR_LIST, lambda v: (MSE_ERR_SNR, 0.0, v), 'State gain difference [dB]')]
+    err_snrs = list(np.atleast_1d(MSE_ERR_SNR))
+    xl_p, xl_g = r'State phase error $\psi-90^\circ$ [deg]', r'State gain ratio $\kappa$ [dB]'
+    sweeps = [('snr', MSE_FB_SNR, lambda v: (v, STATE_PSI_ERR, STATE_GAIN_DB), 'Feedback SNR [dB]')]
+    for es in err_snrs:
+        sweeps.append((f'perr{es:g}', MSE_PERR_LIST, lambda v, es=es: (es, v, 0.0), xl_p))
+    for es in err_snrs:
+        sweeps.append((f'gerr{es:g}', MSE_GERR_LIST, lambda v, es=es: (es, 0.0, v), xl_g))
     save = {'methods': np.array(EST_METHODS, dtype=object), 'trials': MSE_TRIALS, 'mse_mod': MSE_MOD,
             'state_psi_nom': STATE_PSI_NOM, 'state_psi_err': STATE_PSI_ERR, 'state_gain_db': STATE_GAIN_DB,
             'huang_p_phase_deg': HUANG_P_PHASE_DEG, 'huang_p_gain_db': HUANG_P_GAIN_DB,
-            'huang_train_rep': HUANG_TRAIN_REP, 'mse_err_snr': MSE_ERR_SNR, 'fb_gain': FB_GAIN}
+            'huang_train_rep': HUANG_TRAIN_REP, 'mse_err_snr': np.array(err_snrs, float), 'fb_gain': FB_GAIN}
     res = {}
     for tag, xs, fn, _ in sweeps:
         rows, crbs, isru = [], [], []
@@ -925,29 +982,43 @@ def run_mse(out_dir):
             save[f'{tag}_mse_psi_prop'] = arr[:, EST_METHODS.index('prop'), 5]
         savemat(os.path.join(out_dir, 'two_state_polar_mse.mat'), save)
 
-    fig, ax = plt.subplots(4, 3, figsize=(12, 11), squeeze=False)
-    for c, (tag, _, _, xl) in enumerate(sweeps):
-        x, arr, crb, isru = res[tag]
-        for r, (k, yl, logy) in enumerate([(0, r'MSE of $\varepsilon_T$', True), (1, r'MSE of $\varphi_T$ [deg$^2$]', True),
-                                           (2, 'Residual ISR [dB]', False), (3, 'Residual EVM [%]', True)]):
-            a = ax[r, c]
-            for j, m in enumerate(EST_METHODS):
-                yv = 10 * np.log10(arr[:, j, k]) if k == 2 else arr[:, j, k]
-                (a.semilogy if logy else a.plot)(x, yv, STYLE[m], ms=3.5, lw=1, label=LABELS[m])
-            if k in (0, 1) and np.all(np.isfinite(crb[:, k])):
-                a.semilogy(x, crb[:, k], 'k--', lw=1, label='CRB (two-state)')
-            if k == 2:
-                a.plot(x, 10 * np.log10(isru), 'c--', lw=1, label='Uncompensated')
-            a.set_xlabel(xl, fontsize=8)
-            a.set_ylabel(yl, fontsize=8)
-            a.grid(True, which='both', ls=':', lw=.5)
-            a.tick_params(labelsize=7)
+    # figure: column 1 = feedback SNR sweep, column 2 = phase error, column 3 = gain ratio;
+    # in columns 2-3 the highest feedback SNR is drawn with solid lines and filled markers,
+    # lower ones with dotted lines and open markers
+    cols = [[('snr', None)], [(f'perr{es:g}', es) for es in err_snrs], [(f'gerr{es:g}', es) for es in err_snrs]]
+    xlabels = ['Feedback SNR [dB]', xl_p, xl_g]
+    fig, ax = plt.subplots(4, 3, figsize=(13, 11.5), squeeze=False)
+    for c, group in enumerate(cols):
+        for tag, es in group:
+            x, arr, crb, isru = res[tag]
+            main = es is None or es == max(err_snrs)
+            suffix = '' if es is None or len(err_snrs) == 1 else f', {es:g} dB'
+            for r, (k, yl, logy) in enumerate([(0, r'MSE of $\varepsilon_T$', True),
+                                               (1, r'MSE of $\varphi_T$ [deg$^2$]', True),
+                                               (2, 'Residual ISR [dB]', False), (3, 'Residual EVM [%]', True)]):
+                a = ax[r, c]
+                draw = a.semilogy if logy else a.plot
+                for j, m in enumerate(EST_METHODS):
+                    yv = 10 * np.log10(arr[:, j, k]) if k == 2 else arr[:, j, k]
+                    st = STYLE[m]
+                    draw(x, yv, color=st[0], marker=st[-1], ls='-' if main else ':', ms=3.5, lw=1,
+                         mfc=st[0] if main else 'none', markevery=2, label=LABELS[m] + suffix)
+                if k in (0, 1) and np.all(np.isfinite(crb[:, k])):
+                    a.semilogy(x, crb[:, k], color='k', ls='--' if main else '-.', lw=1, label='CRB' + suffix)
+                if k == 2 and main:
+                    a.plot(x, 10 * np.log10(isru), 'c--', lw=1, label='Uncompensated')
+                a.set_xlabel(xlabels[c], fontsize=8)
+                a.set_ylabel(yl, fontsize=8)
+                a.grid(True, which='both', ls=':', lw=.5)
+                a.tick_params(labelsize=7)
     ax[0, 0].legend(fontsize=6)
     ax[2, 0].legend(fontsize=6)
     fig.suptitle(f'Huang assumes P = {HUANG_P_PHASE_DEG:g} deg / {HUANG_P_GAIN_DB:g} dB; '
-                 f'col. 1: state error {STATE_PSI_ERR:g} deg / {STATE_GAIN_DB:g} dB, '
-                 f'col. 2-3: feedback SNR {MSE_ERR_SNR:g} dB', fontsize=9)
-    fig.tight_layout()
+                 f'col. 1: state mismatch {STATE_PSI_ERR:g} deg / {STATE_GAIN_DB:g} dB; '
+                 f'col. 2-3: feedback SNR ' + ', '.join(f'{e:g}' for e in err_snrs) + ' dB', fontsize=9)
+    h_, l_ = ax[0, 1].get_legend_handles_labels()
+    fig.legend(h_, l_, loc='lower center', ncol=4, fontsize=7, title='Columns 2-3', title_fontsize=7)
+    fig.tight_layout(rect=(0, 0.045, 1, 1))
     for ext in ('png', 'pdf'):
         fig.savefig(os.path.join(out_dir, f'two_state_polar_mse.{ext}'), dpi=160)
     return res
