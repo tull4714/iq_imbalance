@@ -98,6 +98,14 @@ _NB_CACHE = os.path.isfile(globals().get('__file__', ''))   # numba cache only w
 # For each estimation method <m> (prop, huang, huang_flat), scalars averaged over the slots:
 # est_mse_eps_<m>_<tag>, est_mse_phi_<m>_<tag> : MSE of eps_T and phi_T [deg^2] in the link
 # est_isr_db_<m>_<tag> : residual image-to-signal ratio in the link [dB]
+# Predictions (no decoding involved, computed from the residual image-to-signal ratio ISR of every slot):
+# isr_db_<s>_<tag>         : mean ISR of scheme <s> over the slots [dB] (ideal: -inf)
+# rawber_pred_<s>_<tag>    : theoretical uncoded BER, exact Gray M-QAM formula at the SINR with the image
+#                            treated as Gaussian interference (Rayleigh: averaged over |H|^2), slot average
+# snrloss_pred_<s>_<tag>   : predicted SNR loss against 'ideal' [dB] (mutual-information-equivalent SNR)
+# bler_pred_<s>_<tag>      : predicted BLER = simulated 'ideal' BLER read at the equivalent SNR, slot average
+# ber_pred_<s>_<tag>       : predicted coded BER, same mapping applied to the simulated 'ideal' coded BER
+#                            (NaN where the 'ideal' reference curve has no observed errors)
 
 
 # ============================================================
@@ -601,6 +609,89 @@ def qam_theory_ber(M, ebn0_db):
     return (2 / k) * (1 - 1 / np.sqrt(M)) * erfc(np.sqrt(3 * k * g / (2 * (M - 1))))
 
 
+# ============================================================
+# Performance prediction from the residual image-to-signal ratio (ISR)
+# ============================================================
+# Received symbol after desired-gain equalization: Y(k) = X(k) + rho X*(-k) + noise, |rho|^2 = ISR. The image
+# is an independent data symbol of the same power, so it is treated as Gaussian interference:
+#     SINR = |H|^2 / ((1 + ISR) / (Es/N0) + |H|^2 ISR)          (AWGN: |H|^2 = 1)
+# The factor (1 + ISR) appears because Es/N0 is defined on the total transmit power (signal + image), and
+# the image fades with the signal because the I/Q imbalance is at the transmitter.
+def qam_ber_exact(M, snr):
+    """Exact hard-decision BER of Gray-coded square M-QAM in Gaussian noise vs Es/N0 (linear)."""
+    snr = np.asarray(snr, float)
+    m = int(np.log2(M)) // 2
+    L = 2 ** m
+    a = np.sqrt(3 * snr / (2 * (M - 1)))
+    pb = np.zeros_like(snr)
+    for j in range(1, m + 1):
+        for i in range(int((1 - 2.0 ** -j) * L)):
+            w = (-1) ** (i * 2 ** (j - 1) // L) * (2 ** (j - 1) - int(i * 2 ** (j - 1) / L + 0.5))
+            pb += w * erfc((2 * i + 1) * a)
+    return pb / (L * m)
+
+
+_PRED_DB = np.arange(-30.0, 60.01, 0.25)                 # Es/N0 grid of the mutual-information tables [dB]
+_tq, _wq = np.polynomial.legendre.leggauss(96)           # Rayleigh average: |H|^2 = t^2, t in [0, 6]
+_H2_Q = (3 * (_tq + 1)) ** 2
+_H2_W = 3 * _wq * 2 * (3 * (_tq + 1)) * np.exp(-_H2_Q)
+_H2_W /= _H2_W.sum()
+_MI_TAB = {}
+
+
+def bicm_mi_table(M):
+    """BICM mutual information [bits/symbol] of M-QAM (TS 38.211 labels) in AWGN on the grid _PRED_DB."""
+    if M not in _MI_TAB:
+        lv, lab = _axis_table(M)
+        z, wz = np.polynomial.hermite_e.hermegauss(64)
+        wz = wz / wz.sum()
+        mi = np.zeros(_PRED_DB.size)
+        for n, sdb in enumerate(_PRED_DB):
+            sg = np.sqrt(0.5 / 10 ** (sdb / 10))                         # noise std per real dimension
+            y = lv[:, None] + sg * z[None, :]                            # (levels, nodes)
+            ll = -(y[:, :, None] - lv[None, None, :]) ** 2 / (2 * sg * sg)
+            for j in range(lab.shape[1]):
+                l0 = np.logaddexp.reduce(ll[:, :, lab[:, j] == 0], axis=2)
+                l1 = np.logaddexp.reduce(ll[:, :, lab[:, j] == 1], axis=2)
+                d = np.where(lab[:, j][:, None] == 0, l1 - l0, l0 - l1)   # log P(wrong) / P(right)
+                mi[n] += 2 * (1 - np.mean(np.logaddexp(0, d) @ wz) / np.log(2))
+        _MI_TAB[M] = mi
+    return _MI_TAB[M]
+
+
+def avg_mi(M, sinr):
+    """BICM mutual information at the given SINR (linear, any shape)."""
+    return np.interp(10 * np.log10(np.maximum(sinr, 1e-12)), _PRED_DB, bicm_mi_table(M))
+
+
+def predict_from_isr(M, fading, esn0_db, isr):
+    """Uncoded BER and MI-equivalent Es/N0 [dB] for every slot.
+    esn0_db (n_snr,), isr (n_slot,) linear -> raw_ber (n_slot, n_snr), esn0_eq_db (n_slot, n_snr)."""
+    g = 10 ** (np.asarray(esn0_db, float) / 10)[None, :, None]
+    r = np.asarray(isr, float)[:, None, None]
+    h2, wq = (_H2_Q, _H2_W) if fading else (np.ones(1), np.ones(1))
+    sinr = h2[None, None, :] / ((1 + r) / g + h2[None, None, :] * r)
+    raw = qam_ber_exact(M, sinr) @ wq
+    mi = avg_mi(M, sinr) @ wq
+    ref = avg_mi(M, 10 ** (_PRED_DB / 10)[:, None] * h2[None, :]) @ wq   # 'ideal' MI vs Es/N0
+    ref = ref + 1e-12 * np.arange(ref.size)                              # strictly increasing for the inversion
+    return raw, np.interp(mi, ref, _PRED_DB)
+
+
+def read_ref_curve(x_ref, y_ref, n_err, x, cap):
+    """Reference curve y_ref(x_ref) read at x (any shape), log-linear inter/extrapolation.
+    Only the points with observed errors are used; returns (values, smallest supported value)."""
+    v = (np.asarray(n_err) > 0) & (np.asarray(y_ref) > 0)
+    if v.sum() < 2:
+        return np.full(np.shape(x), np.nan), np.nan
+    xv, lv = np.asarray(x_ref)[v], np.log10(np.asarray(y_ref)[v])
+    out = np.interp(x, xv, lv)
+    lo, hi = x < xv[0], x > xv[-1]
+    out = np.where(lo, lv[0] + (x - xv[0]) * (lv[1] - lv[0]) / (xv[1] - xv[0]), out)
+    out = np.where(hi, lv[-1] + (x - xv[-1]) * (lv[-1] - lv[-2]) / (xv[-1] - xv[-2]), out)
+    return 10 ** np.minimum(out, np.log10(cap)), 10 ** lv.min()
+
+
 def random_slot(M):
     """Random M-QAM slot (SYMB, N) for the data-aided estimators."""
     return qam_map(np.random.randint(0, 2, SLOT * int(np.log2(M))), M).reshape(SYMB, N)
@@ -1054,6 +1145,7 @@ def run_link(out_dir, code):
             n_raw, frames = 0, 0
             ref_pow = np.zeros(ebn0.size)
             est_stat = {m: [] for m in est_methods}
+            isr_slot = {s: [] for s in LINK_SCHEMES}       # residual ISR of every slot (prediction)
             t0 = time.time()
 
             def dump():
@@ -1075,6 +1167,18 @@ def run_link(out_dir, code):
                         v = np.mean(est_stat[m], 0)
                         d[f'est_mse_eps_{m}_{tag}'], d[f'est_mse_phi_{m}_{tag}'] = v[0], v[1]
                         d[f'est_isr_db_{m}_{tag}'] = 10 * np.log10(v[2])
+                if frames:                      # predictions from the per-slot ISR
+                    esn0 = ebn0 + 10 * np.log10(R * k)
+                    for s in LINK_SCHEMES:
+                        isr = np.array(isr_slot[s])
+                        raw, eq = predict_from_isr(M, fading, esn0, isr)
+                        d[f'isr_db_{s}_{tag}'] = 10 * np.log10(max(isr.mean(), 1e-30)) if isr.mean() > 0 else -np.inf
+                        d[f'rawber_pred_{s}_{tag}'] = raw.mean(0)
+                        d[f'snrloss_pred_{s}_{tag}'] = (esn0[None, :] - eq).mean(0)
+                        for key, cnt, cap in (('bler', 'blk_err', 1.0), ('ber', 'bit_err', 0.5)):
+                            val, floor = read_ref_curve(esn0, d[f'{key}_ideal_{tag}'], S['ideal'][cnt], eq, cap)
+                            val = val.mean(0)
+                            d[f'{key}_pred_{s}_{tag}'] = np.where(val >= floor, val, np.nan)
                 save.update(d)
                 savemat(os.path.join(out_dir, 'two_state_polar_link.mat'), save)
 
@@ -1085,6 +1189,8 @@ def run_link(out_dir, code):
                                                       STATE_GAIN_DB, M)
                 for m in est_methods:
                     est_stat[m].append((*param_errors(m, est[m], eT, pT), isr_of(m, est[m], eT, pT)))
+                for s in LINK_SCHEMES:
+                    isr_slot[s].append(0.0 if s == 'ideal' else isr_of(s, est.get(s), eT, pT))
                 a = np.random.randint(0, 2, (n_cw, code.A)).astype(np.uint8)
                 cw = code.encode(a)
                 bits = np.concatenate([cw.ravel(), np.random.randint(0, 2, SLOT * k - n_cw * code.E).astype(np.uint8)])
@@ -1136,6 +1242,8 @@ def run_link(out_dir, code):
             for m in est_methods:
                 v = np.mean(est_stat[m], 0)
                 print(f'    estimation {m:10s}: MSE eps {v[0]:.2e}, MSE phi {v[1]:.2e} deg^2, ISR {10 * np.log10(v[2]):.1f} dB')
+            print('    predicted SNR loss vs ideal at the highest Eb/N0: ' + ', '.join(
+                f'{s} {save[f"snrloss_pred_{s}_{tag}"][-1]:.3f} dB' for s in LINK_SCHEMES if s != 'ideal'))
             for i, eb in enumerate(ebn0):
                 print(f'    Eb/N0 {eb:4.1f} dB: ' + ' | '.join(
                     f'{s} BLER {save[f"bler_{s}_{tag}"][i]:.2e} EVM {save[f"evm_{s}_{tag}"][i]:.2f}%'
@@ -1149,8 +1257,11 @@ def run_link(out_dir, code):
                 ax[0, 2].semilogy(ebn0, np.maximum(save[f'rawber_{s}_{tag}'], 1e-8), STYLE[s], **kw)
                 ax[1, 0].plot(ebn0, save[f'evm_{s}_{tag}'], STYLE[s], **kw)
                 ax[1, 1].plot(ebn0, save[f'thr_{s}_{tag}'], STYLE[s], **kw)
-            if not fading:
-                ax[0, 2].semilogy(ebn0, save[f'theory_raw_ber_{tag}'], 'k:', lw=1, label='Theory (AWGN)')
+                c_ = STYLE[s][0]                 # predictions: dotted line of the same colour, no markers
+                ax[0, 2].semilogy(ebn0, save[f'rawber_pred_{s}_{tag}'], c_ + ':', lw=1.6)
+                if s != 'ideal':
+                    ax[0, 0].semilogy(ebn0, save[f'bler_pred_{s}_{tag}'], c_ + ':', lw=1.6)
+                    ax[0, 1].semilogy(ebn0, save[f'ber_pred_{s}_{tag}'], c_ + ':', lw=1.6)
             for a_, yl in zip(ax.ravel()[:5], ['BLER', 'Coded BER', 'Uncoded (raw) BER', 'EVM [%]',
                                               'Throughput [info bits / symbol]']):
                 a_.set_xlabel('$E_b/N_0$ per information bit [dB]', fontsize=8)
@@ -1162,6 +1273,8 @@ def run_link(out_dir, code):
             ax[0, 2].set_ylim(1e-6, 1)
             ax[1, 2].axis('off')
             h_, l_ = ax[0, 0].get_legend_handles_labels()
+            h_.append(plt.Line2D([], [], color='gray', ls=':', lw=1.6))
+            l_.append('Prediction from ISR (dotted, same colour)')
             ax[1, 2].legend(h_, l_, fontsize=8, loc='center')
             fig.suptitle(f'{M}-QAM, {ch_name}, polar (A={code.A}, E={code.E}, N={code.N}, CA-SCL L={code.list_size}), '
                          f'feedback SNR {FB_SNR_LINK:g} dB, state error {STATE_PSI_ERR:g} deg / {STATE_GAIN_DB:g} dB, '
